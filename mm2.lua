@@ -819,7 +819,7 @@ function API.BeforeCycle()
         if S.transaction then S.purchaseBlocked=true;S.notice="Transaction interrupted; no automatic retry"
         else S.notice="Client error; see local log" end
         S.transaction=false;cancelMovement();S.errors=S.errors+1
-        log("MAIN_ERROR",{message=tostring(allowed)});;task.wait(2)
+        log("MAIN_ERROR",{message=tostring(allowed)});task.wait(2)
         return false
     end
     return allowed==true
