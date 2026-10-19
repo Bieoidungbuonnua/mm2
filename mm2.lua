@@ -409,60 +409,210 @@ local function purchaseBatch()
     S.transaction=false;return true
 end
 local function buildUI()
-    local old=PlayerGui:FindFirstChild("SkiderMM2Kaitun");if old then old:Destroy() end
-    local screen=Instance.new("ScreenGui")
-    screen.Name="SkiderMM2Kaitun";screen.ResetOnSpawn=false;screen.DisplayOrder=50;screen.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
-    local parent=PlayerGui
-    if typeof(gethui)=="function" then local ok,p=pcall(gethui);if ok and p then parent=p end end
-    screen.Parent=parent
-    local green=Color3.fromRGB(107,235,124)
-    local function make(class,props,owner)
-        local o=Instance.new(class);for k,v in pairs(props) do o[k]=v end;o.Parent=owner;return o
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Player
+local function richText(value)
+    return (tostring(value):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
+end
+for _, parent in ipairs({CoreGui, PlayerGui}) do
+    for _, name in ipairs({"SkiderMM2Kaitun", "SkiderMM2KaitunUI"}) do
+        local old = parent:FindFirstChild(name, true)
+        if old and old:IsA("ScreenGui") then old:Destroy() end
     end
-    local main=make("Frame",{Name="Panel",Size=UDim2.fromOffset(360,346),Position=UDim2.fromOffset(24,140),
-        BackgroundColor3=Color3.fromRGB(10,13,11),BorderSizePixel=0,Active=true},screen)
-    make("UICorner",{CornerRadius=UDim.new(0,14)},main);make("UIStroke",{Color=Color3.fromRGB(42,76,49),Thickness=1},main)
-    local bar=make("Frame",{Size=UDim2.new(1,-32,0,3),Position=UDim2.fromOffset(16,15),BackgroundColor3=green,BorderSizePixel=0},main)
-    make("UICorner",{CornerRadius=UDim.new(1,0)},bar)
-    local function label(name,text,x,y,w,h,size,color)
-        return make("TextLabel",{Name=name,Text=text,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),Font=Enum.Font.FredokaOne,
-            TextSize=size,TextColor3=color or Color3.fromRGB(236,245,238),TextXAlignment=Enum.TextXAlignment.Left,
-            TextYAlignment=Enum.TextYAlignment.Center,BackgroundTransparency=1,TextTruncate=Enum.TextTruncate.AtEnd},main)
+end
+-- 1. Tạo ScreenGui
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SkiderMM2KaitunUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 50
+ScreenGui.IgnoreGuiInset = true -- Phủ đen toàn bộ màn hình kể cả thanh Topbar
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local success = pcall(function()
+    ScreenGui.Parent = CoreGui
+end)
+if not success then
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- 2. Màn hình đen Full Screen
+local BlackScreen = Instance.new("Frame")
+BlackScreen.Name = "BlackScreen"
+BlackScreen.Size = UDim2.new(1, 0, 1, 0)
+BlackScreen.Position = UDim2.new(0, 0, 0, 0)
+BlackScreen.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+BlackScreen.BorderSizePixel = 0
+BlackScreen.Parent = ScreenGui
+
+-- 3. Cụm chứa chữ vô hình (Để tự động căn giữa mọi thứ mà không có khung)
+local CenterContainer = Instance.new("Frame")
+CenterContainer.Name = "CenterContainer"
+CenterContainer.Size = UDim2.new(0, 800, 0, 520)
+CenterContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
+CenterContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+CenterContainer.BackgroundTransparency = 1 -- Hoàn toàn trong suốt, không khung
+CenterContainer.Parent = BlackScreen
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Parent = CenterContainer
+UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 14) -- Khoảng cách thoáng giữa các dòng
+
+-- Hàm tạo chữ nhanh với Font FredokaOne và hỗ trợ RichText (đổi màu từng phần chữ)
+local function CreateText(order, text, size, color)
+    local label = Instance.new("TextLabel")
+    label.LayoutOrder = order
+    label.Size = UDim2.new(1, 0, 0, size + 6)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.FredokaOne
+    label.Text = text
+    label.TextSize = size
+    label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    label.RichText = true
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.Parent = CenterContainer
+    return label
+end
+
+-- ================= THIẾT KẾ CÁC DÒNG CHỮ TRÊN NỀN ĐEN =================
+
+-- 1. Tên UI (To và nổi bật nhất ở trên cùng)
+local TitleLabel = CreateText(
+    1,
+    "🔪 Skider MM2 Kaitun 🎃",
+    44,
+    Color3.fromRGB(85, 255, 127) -- Xanh lá sáng
+)
+
+-- 2. Username
+local playerName = LocalPlayer and LocalPlayer.Name or "Player"
+local UsernameLabel = CreateText(
+    2,
+    '👤 Username : <font color="#55ff7f">' .. richText(playerName) .. '</font>',
+    22,
+    Color3.fromRGB(220, 220, 220)
+)
+
+-- 3. Khu vực hiển thị Candies & Candies This Round (Đặt cạnh nhau ở trung tâm)
+local CandyRow = Instance.new("Frame")
+CandyRow.LayoutOrder = 3
+CandyRow.Size = UDim2.new(0, 560, 0, 75)
+CandyRow.BackgroundTransparency = 1
+CandyRow.Parent = CenterContainer
+
+local CandiesLabel = Instance.new("TextLabel")
+CandiesLabel.Size = UDim2.new(0.5, 0, 1, 0)
+CandiesLabel.Position = UDim2.new(0, 0, 0, 0)
+CandiesLabel.BackgroundTransparency = 1
+CandiesLabel.Font = Enum.Font.FredokaOne
+CandiesLabel.RichText = true
+CandiesLabel.Text = '🍬 Candies\n<font size="34" color="#55ff7f">0</font>'
+CandiesLabel.TextSize = 18
+CandiesLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
+CandiesLabel.Parent = CandyRow
+
+local CandiesRoundLabel = Instance.new("TextLabel")
+CandiesRoundLabel.Size = UDim2.new(0.5, 0, 1, 0)
+CandiesRoundLabel.Position = UDim2.new(0.5, 0, 0, 0)
+CandiesRoundLabel.BackgroundTransparency = 1
+CandiesRoundLabel.Font = Enum.Font.FredokaOne
+CandiesRoundLabel.RichText = true
+CandiesRoundLabel.Text = '🎯 Candies This Round\n<font size="34" color="#ffffff">0/50</font>'
+CandiesRoundLabel.TextSize = 18
+CandiesRoundLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
+CandiesRoundLabel.Parent = CandyRow
+
+-- 4. Status Farming
+local StatusLabel = CreateText(
+    4,
+    '⚡ Status Farming : <font color="#55ff7f">Waiting for next round...</font>',
+    22,
+    Color3.fromRGB(255, 255, 255)
+)
+
+-- 5. Map ; Role ; Tier Battlepass
+local MapRoleTierLabel = CreateText(
+    5,
+    '🗺️ Map : <font color="#ffaa00">Lobby</font>   ;   🎭 Role : <font color="#00ffff">None</font>   ;   🏆 Tier Battlepass : <font color="#ff55ff">0/30</font>',
+    20,
+    Color3.fromRGB(200, 200, 200)
+)
+
+-- 6. Total time elapsed
+local TimeLabel = CreateText(
+    6,
+    '⏱️ Total time elapsed : <font color="#ffff55">00:00:00</font>',
+    22,
+    Color3.fromRGB(255, 255, 255)
+)
+
+-- 7. Link web mtrchill.click
+local WebLabel = CreateText(
+    7,
+    "🌐 mtrchill.click",
+    20,
+    Color3.fromRGB(85, 255, 127)
+)
+
+-- Dòng nhắc phím tắt mờ ở dưới cùng
+local HintLabel = CreateText(
+    8,
+    "💡 Press [Left Ctrl] to Toggle UI",
+    14,
+    Color3.fromRGB(90, 90, 90)
+)
+
+-- ================= CHỨC NĂNG HOẠT ĐỘNG =================
+
+-- 1. Phím tắt Left Ctrl để Bật / Tắt UI
+connect(UIS.InputBegan,function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.LeftControl then
+        BlackScreen.Visible = not BlackScreen.Visible
     end
-    label("Title","Skider MM2 Kaitun",18,27,310,32,23,green)
-    label("Mode",Config.mode==1 and "CANDY / CRATES" or "CANDY / BATTLE PASS",19,62,320,20,11,Color3.fromRGB(143,169,148))
-    local labels={}
-    label("UserCaption","USER",19,98,80,18,11,Color3.fromRGB(143,169,148));labels.user=label("User",Player.Name,19,117,320,27,17)
-    label("CandyCaption","CANDIES",19,157,150,18,11,Color3.fromRGB(143,169,148));labels.candies=label("Candies","Loading",19,177,150,28,23,green)
-    label("BagCaption","THIS ROUND",196,157,145,18,11,Color3.fromRGB(143,169,148));labels.bag=label("Bag","0/50",196,177,145,28,23)
-    labels.status=label("Status","Status Farming : Starting",19,216,322,38,13,green)
-    labels.status.TextWrapped=true;labels.status.TextTruncate=Enum.TextTruncate.None
-    labels.extra=label("Round","Lobby | Spectator | N/A",19,256,322,20,11,Color3.fromRGB(163,184,168))
-    labels.elapsed=label("Elapsed","Total time elapsed : 00:00:00",19,280,265,20,12)
-    label("Brand","mtrchill.click",19,315,220,19,13,green)
-    local pause=make("TextButton",{Text="PAUSE",Position=UDim2.fromOffset(272,309),Size=UDim2.fromOffset(69,26),Font=Enum.Font.FredokaOne,
-        TextSize=11,TextColor3=green,BackgroundColor3=Color3.fromRGB(24,39,27),BorderSizePixel=0},main)
-    make("UICorner",{CornerRadius=UDim.new(0,7)},pause)
-    connect(pause.Activated,function() S.paused=not S.paused;cancelMovement();pause.Text=S.paused and "RESUME" or "PAUSE" end)
-    local close=make("TextButton",{Text="x",Position=UDim2.fromOffset(326,32),Size=UDim2.fromOffset(19,21),Font=Enum.Font.FredokaOne,
-        TextSize=15,BackgroundTransparency=1,TextColor3=Color3.fromRGB(140,165,146)},main)
-    connect(close.Activated,function() API.Stop() end)
-    local dragging,startInput,startPosition
-    connect(main.InputBegan,function(input)
-        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-            dragging=true;startInput=input.Position;startPosition=main.Position
-        end
-    end)
-    connect(UIS.InputEnded,function(input)
-        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
-    end)
-    connect(UIS.InputChanged,function(input)
-        if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
-            local d=input.Position-startInput;main.Position=startPosition+UDim2.fromOffset(d.X,d.Y)
-        end
-    end)
-    connect(UIS.InputBegan,function(input,processed) if not processed and input.KeyCode==Enum.KeyCode.RightShift then screen.Enabled=not screen.Enabled end end)
-    return screen,labels
+end)
+
+StatusLabel.Size = UDim2.new(1, 0, 0, 50)
+StatusLabel.TextWrapped = true
+MapRoleTierLabel.TextScaled = true
+TimeLabel.TextScaled = true
+local timeSize = Instance.new("UITextSizeConstraint")
+timeSize.MinTextSize = 14
+timeSize.MaxTextSize = 22
+timeSize.Parent = TimeLabel
+local infoSize = Instance.new("UITextSizeConstraint")
+infoSize.MinTextSize = 12
+infoSize.MaxTextSize = 20
+infoSize.Parent = MapRoleTierLabel
+local scale = Instance.new("UIScale")
+scale.Parent = CenterContainer
+local function resize()
+    local size = BlackScreen.AbsoluteSize
+    scale.Scale = math.max(0.1, math.min(1, (size.X - 24) / 800, (size.Y - 24) / 520))
+end
+connect(BlackScreen:GetPropertyChangedSignal("AbsoluteSize"), resize)
+resize()
+local bindings = {
+    SetCandies = function(total, thisRound)
+        CandiesLabel.Text = '🍬 Candies\n<font size="34" color="#55ff7f">' .. richText(total) .. '</font>'
+        CandiesRoundLabel.Text = '🎯 Candies This Round\n<font size="34" color="#ffffff">' .. richText(thisRound) .. '</font>'
+    end,
+    SetStatus = function(statusText)
+        StatusLabel.Text = '⚡ Status Farming : <font color="#55ff7f">' .. richText(statusText) .. '</font>'
+    end,
+    SetInfo = function(mapName, roleName, tierText)
+        MapRoleTierLabel.Text = string.format(
+            '🗺️ Map : <font color="#ffaa00">%s</font>   ;   🎭 Role : <font color="#00ffff">%s</font>   ;   🏆 Tier Battlepass : <font color="#ff55ff">%s</font>',
+            richText(mapName), richText(roleName), richText(tierText)
+        )
+    end,
+    SetElapsed = function(elapsed, roundTime)
+        TimeLabel.Text = '⏱️ Total time elapsed : <font color="#ffff55">' .. richText(elapsed) .. '</font>   |   Round Time : ' .. richText(roundTime)
+    end,
+}
+API.UI = bindings
+return ScreenGui, bindings
 end
 function API.Stop()
     if not S.running then return end
@@ -570,11 +720,13 @@ task.spawn(function()
 end)
 task.spawn(function()
     while S.running do
-        local m=metrics();Labels.candies.Text=tostring(m.candies);Labels.bag.Text=m.bag
-        Labels.status.Text="Status Farming : "..(blockedByVerification() and "Required Buy/Premium Or Verification Age" or S.paused and "Paused" or S.status)
-        Labels.extra.Text=m.map.." | "..m.role.." | "..m.roundTime.." | Tier "..m.tier
-        Labels.elapsed.Text="Total time elapsed : "..m.elapsed
-        if S.notice~="" and not blockedByVerification() then Labels.status.Text="Status Farming : "..S.notice end
+        local m=metrics()
+        Labels.SetCandies(m.candies,m.bag)
+        local shownStatus=blockedByVerification() and "Required Buy/Premium Or Verification Age" or S.paused and "Paused" or S.status
+        if S.notice~="" and not blockedByVerification() then shownStatus=S.notice end
+        Labels.SetStatus(shownStatus)
+        Labels.SetInfo(m.map,m.role,m.tier)
+        Labels.SetElapsed(m.elapsed,m.roundTime)
         task.wait(0.25)
     end
 end)
@@ -649,7 +801,7 @@ API.Connect=connect
 API.Gui=Ui
 log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,targetTier=TargetTier,speed=Config.speed,
     validation={movement=Validation.NoMovement==true,spending=Validation.NoSpending==true}})
-print("[Skider] Skider MM2 Kaitun ready | mode "..Config.mode.." | RightShift toggles UI")
+print("[Skider] Skider MM2 Kaitun ready | mode "..Config.mode.." | Left Ctrl toggles UI")
 return API
 
 end
