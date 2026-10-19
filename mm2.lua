@@ -222,7 +222,7 @@ local function connect(signal,callback)
     local c=signal:Connect(function(...)
         if not S.running then return end
         local ok,err=pcall(callback,...)
-        if not ok then S.errors=S.errors+1;S.notice="Client error; see local log";log("CLIENT_ERROR",{message=tostring(err)});warn("[Skider] "..tostring(err)) end
+        if not ok then S.errors=S.errors+1;S.notice="Client error; see local log";log("CLIENT_ERROR",{message=tostring(err)}); end
     end)
     S.connections[#S.connections+1]=c;return c
 end
@@ -732,7 +732,7 @@ task.spawn(function()
             local text=table.concat(S.logQueue);S.logQueue={}
             if typeof(appendfile)=="function" then
                 local ok=pcall(appendfile,"Skider_MM2_Kaitun.log",text)
-                if not ok then warn("[Skider] Local log write failed") end
+                if not ok then  end
             end
         end
         task.wait(0.5)
@@ -819,7 +819,7 @@ function API.BeforeCycle()
         if S.transaction then S.purchaseBlocked=true;S.notice="Transaction interrupted; no automatic retry"
         else S.notice="Client error; see local log" end
         S.transaction=false;cancelMovement();S.errors=S.errors+1
-        log("MAIN_ERROR",{message=tostring(allowed)});warn("[Skider] "..tostring(allowed));task.wait(2)
+        log("MAIN_ERROR",{message=tostring(allowed)});;task.wait(2)
         return false
     end
     return allowed==true
@@ -844,7 +844,7 @@ API.Connect=connect
 API.Gui=Ui
 log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,targetTier=TargetTier,speed=Config.speed,
     validation={movement=Validation.NoMovement==true,spending=Validation.NoSpending==true}})
-print("[Skider] Skider MM2 Kaitun ready | mode "..Config.mode)
+
 return API
 
 end
@@ -1373,28 +1373,6 @@ local function ResetCharacterAfterFullBag()
 
     CancelTween()
 
-    print("")
-    print(
-        "============================================"
-    )
-
-    print(
-        "[Candy] BAG FULL:",
-        CurrentBag ..
-        "/" ..
-        MaxBag
-    )
-
-    print(
-        "[Candy] Reset character sau",
-        Config.ResetDelay,
-        "giây..."
-    )
-
-    print(
-        "============================================"
-    )
-
     task.wait(
         Config.ResetDelay
     )
@@ -1421,10 +1399,6 @@ local function ResetCharacterAfterFullBag()
         if Humanoid
             and Humanoid.Health > 0 then
 
-            print(
-                "[Candy] Resetting character..."
-            )
-
             pcall(function()
                 Humanoid.Health = 0
             end)
@@ -1450,9 +1424,6 @@ local function ResetCharacterAfterFullBag()
     ResettingCharacter =
         false
 
-    print(
-        "[Candy] Waiting for next round..."
-    )
 end
 
 local Addon=AttachKaitun({
@@ -1494,15 +1465,6 @@ Addon.Connect(CoinCollected.OnClientEvent,function(
             Extra.Value
     end
 
-    print(
-        string.format(
-            "[Candy] Collected | %d/%d | Value=%s",
-            CurrentBag,
-            MaxBag,
-            tostring(Value)
-        )
-    )
-
     if CurrentBag >= MaxBag
         and MaxBag > 0
         and Config.AutoCandy then
@@ -1530,30 +1492,10 @@ Addon.Connect(CoinsStarted.OnClientEvent,function()
         }
     )
 
-    print("")
-    print(
-        "============================================"
-    )
-
-    print(
-        "[Candy] NEW ROUND"
-    )
-
-    print(
-        "[Candy] Bag reset -> 0"
-    )
-
     if Config.AutoCandy then
-
-        print(
-            "[Candy] Auto Candy tiếp tục..."
-        )
 
     end
 
-    print(
-        "============================================"
-    )
 end)
 
 Addon.Connect(Player.CharacterAdded,function(Character)
@@ -1564,45 +1506,10 @@ Addon.Connect(Player.CharacterAdded,function(Character)
 
     if WaitingNextRound then
 
-        print(
-            "[Candy] Character respawned."
-        )
-
-        print(
-            "[Candy] Vẫn đợi round mới..."
-        )
     end
 end)
 
 task.spawn(function()
-
-    print("")
-    print(
-        "============================================"
-    )
-
-    print(
-        "[MM2 Candy] SCRIPT LOADED"
-    )
-
-    print(
-        "[MM2 Candy] Tween Speed =",
-        Config.TweenSpeed
-    )
-
-    print(
-        "[MM2 Candy] Collect Delay =",
-        Config.CollectDelay
-    )
-
-    print(
-        "[MM2 Candy] Full Bag Reset Delay =",
-        Config.ResetDelay
-    )
-
-    print(
-        "============================================"
-    )
 
     while Gui.Parent do
 
@@ -1666,14 +1573,6 @@ task.spawn(function()
         local CandyName =
             Candy:GetFullName()
 
-        print(
-            string.format(
-                "[Candy] Target %.1f studs | %s",
-                Distance,
-                CandyName
-            )
-        )
-
         local Reached =
             SafeTweenTo(
                 Candy
@@ -1697,11 +1596,6 @@ task.spawn(function()
                 )
 
             if Success then
-
-                print(
-                    "[Candy] SUCCESS:",
-                    Reason
-                )
 
                 if CurrentBag
                     >= MaxBag
@@ -1733,11 +1627,6 @@ task.spawn(function()
                     and Reason
                         ~= "WaitingNextRound" then
 
-                    warn(
-                        "[Candy] Failed:",
-                        Reason
-                    )
-
                     if Candy
                         and Candy.Parent then
 
@@ -1753,4 +1642,8 @@ task.spawn(function()
     end
 end)
 
+print("[Skider MM2] Loaded")
+print("[Skider MM2] User: "..Player.Name)
+print("[Skider MM2] Mode: "..(Settings.mode==1 and "Crates" or "Battle Pass"))
+print("[Skider MM2] UI: "..(Settings.fullscreenUI and "Fullscreen" or "Compact"))
 return Addon
