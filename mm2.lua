@@ -22,6 +22,7 @@ function Core.config(raw, mode, fps)
     if fullscreenUI == nil then fullscreenUI = raw.Ui end
     return {
         fullscreenUI = fullscreenUI ~= false,
+        fpsBoost = raw["Fps Boots"] == true,
         mode = mode == 2 and 2 or 1,
         fps = math.floor(Core.number(fps, 60, 1, 2000)),
         speed = Core.number(raw["Spead Tween"], 120, 1, 1000000),
@@ -167,6 +168,123 @@ end
 return Core
 
 end)()
+local AttachFPSBoost = (function()
+return function()
+    local Players=game:GetService("Players")
+    local Workspace=game:GetService("Workspace")
+    local CollectionService=game:GetService("CollectionService")
+    local Lighting=game:GetService("Lighting")
+    local active=true
+    local originals=setmetatable({},{__mode="k"})
+    local connections={}
+
+    local function save(object,property)
+        local values=originals[object]
+        if not values then values={};originals[object]=values end
+        if values[property]==nil then
+            local ok,value=pcall(function() return object[property] end)
+            if ok then values[property]=value end
+        end
+    end
+    local function change(object,property,value)
+        save(object,property)
+        pcall(function() if object[property]~=value then object[property]=value end end)
+    end
+    local function restoreObject(object)
+        local values=originals[object]
+        if not values then return end
+        for property,value in pairs(values) do pcall(function() object[property]=value end) end
+        originals[object]=nil
+    end
+    local function protected(object)
+        for _,player in ipairs(Players:GetPlayers()) do
+            local character=player.Character
+            if character and (object==character or object:IsDescendantOf(character)) then return true end
+        end
+        local camera=Workspace.CurrentCamera
+        if camera and (object==camera or object:IsDescendantOf(camera)) then return true end
+        local current=object
+        while current and current~=Workspace do
+            if current:GetAttribute("CoinID")~=nil
+                or CollectionService:HasTag(current,"ServerCoinPart")
+                or CollectionService:HasTag(current,"CoinVisual")
+                or current.Name=="Coin_Server" or current.Name=="CoinVisual" then return true end
+            current=current.Parent
+        end
+        return false
+    end
+    local function optimize(object)
+        if not active or not object.Parent then return end
+        if protected(object) then restoreObject(object);return end
+        if object:IsA("BasePart") then
+            change(object,"Transparency",1)
+            change(object,"LocalTransparencyModifier",1)
+            change(object,"CastShadow",false)
+            change(object,"Reflectance",0)
+            if object:IsA("MeshPart") then change(object,"RenderFidelity",Enum.RenderFidelity.Performance) end
+        elseif object:IsA("Decal") or object:IsA("Texture") then
+            change(object,"Transparency",1)
+        elseif object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam")
+            or object:IsA("Smoke") or object:IsA("Fire") or object:IsA("Sparkles")
+            or object:IsA("PointLight") or object:IsA("SpotLight") or object:IsA("SurfaceLight")
+            or object:IsA("SurfaceGui") or object:IsA("BillboardGui") then
+            change(object,"Enabled",false)
+        end
+    end
+    local function optimizeLighting()
+        if not active then return end
+        change(Lighting,"GlobalShadows",false)
+        for _,object in ipairs(Lighting:GetDescendants()) do
+            if object:IsA("PostEffect") then change(object,"Enabled",false) end
+        end
+    end
+
+    local quality
+    local qualityOK,rendering=pcall(function() return settings().Rendering end)
+    if qualityOK and rendering then
+        local ok,value=pcall(function() return rendering.QualityLevel end)
+        if ok then
+            quality=value
+            pcall(function() rendering.QualityLevel=Enum.QualityLevel.Level01 end)
+        end
+    end
+    local terrain=Workspace.Terrain
+    local decorationOK,decoration=pcall(function() return terrain.Decoration end)
+    if decorationOK and decoration~=nil and typeof(sethiddenproperty)=="function" then
+        pcall(sethiddenproperty,terrain,"Decoration",false)
+    end
+
+    connections[#connections+1]=Workspace.DescendantAdded:Connect(function(object)
+        if active then task.defer(function() if active then optimize(object) end end) end
+    end)
+    connections[#connections+1]=Lighting.DescendantAdded:Connect(function(object)
+        if active and object:IsA("PostEffect") then change(object,"Enabled",false) end
+    end)
+    task.spawn(function()
+        while active do
+            optimizeLighting()
+            for index,object in ipairs(Workspace:GetDescendants()) do
+                if not active then return end
+                optimize(object)
+                if index%750==0 then task.wait() end
+            end
+            task.wait(2)
+        end
+    end)
+    local function stop()
+        if not active then return end
+        active=false
+        for _,connection in ipairs(connections) do connection:Disconnect() end
+        for object in pairs(originals) do restoreObject(object) end
+        if quality~=nil then pcall(function() rendering.QualityLevel=quality end) end
+        if decorationOK and decoration~=nil and typeof(sethiddenproperty)=="function" then
+            pcall(sethiddenproperty,terrain,"Decoration",decoration)
+        end
+    end
+    return {Stop=stop}
+end
+
+end)()
 local AttachKaitun = (function()
 
 return function(Context)
@@ -229,7 +347,7 @@ local S={running=true,paused=false,status="Starting",notice="",started=os.clock(
     lastProfileRead=-math.huge,completed=false,collected=0,finalPending=false}
 local API={}
 Env.SkiderMM2=API
-local Ui,Labels,Notify
+local Ui,Labels,Notify,FpsBoost
 local function clone(value)
     if type(value)~="table" then return value end
     local out={};for k,v in pairs(value) do out[k]=clone(v) end;return out
@@ -688,6 +806,7 @@ end
 function API.Stop()
     if not S.running then return end
     S.running=false;cancelMovement();Context.abortReset()
+    if FpsBoost then FpsBoost.Stop();FpsBoost=nil end
     for _,c in ipairs(S.connections) do c:Disconnect() end
     if Ui then Ui:Destroy() end
     log("STOP",{receipts=S.receipts})
@@ -706,6 +825,7 @@ pcall(function()
     if old then old:Destroy() end
 end)
 if typeof(setfpscap)=="function" then pcall(setfpscap,Config.fps) end
+if Config.fpsBoost then FpsBoost=AttachFPSBoost() end
 Ui,Labels=buildUI()
 
 applyProfile(LoadModule(RS:WaitForChild("Modules"):WaitForChild("ProfileData")))
