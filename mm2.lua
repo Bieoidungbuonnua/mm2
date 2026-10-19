@@ -54,14 +54,16 @@ function Core.config(raw, mode, fps)
     }
 end
 
+function Core.isRoundMember(member)
+    return type(member)=="table" and member.Dead==false and member.Killed~=true
+        and (member.Role=="Innocent" or member.Role=="Sheriff" or member.Role=="Murderer"
+            or member.Role=="Survivor" or member.Role=="Zombie")
+end
+
 function Core.canFarm(info)
     return info.enabled == true and info.paused ~= true and info.waiting ~= true
         and info.ended ~= true and (tonumber(info.timer) or 0) > 0 and info.inMap == true
-        and info.characterAlive == true and info.playerAlive == true
-        and type(info.member) == "table" and info.member.Dead == false
-        and info.member.Killed ~= true
-        and (info.member.Role == "Innocent" or info.member.Role == "Sheriff"
-            or info.member.Role == "Murderer")
+        and info.characterAlive == true and Core.isRoundMember(info.member)
 end
 
 function Core.batch(balance, threshold, cost, remaining)
@@ -191,7 +193,25 @@ local Shop=Remotes:WaitForChild("Shop")
 local function LoadModule(module: any): any return require(module) end
 local Sync=LoadModule(RS:WaitForChild("Database"):WaitForChild("Sync"))
 local Round=LoadModule(RS:WaitForChild("Modules"):WaitForChild("CurrentRoundClient"))
-local Event=LoadModule(RS:WaitForChild("SharedServices"):WaitForChild("EventInfoService")):GetMainEvent()
+local EventInfo=LoadModule(RS:WaitForChild("SharedServices"):WaitForChild("EventInfoService"))
+local function WaitForEvent()
+    while true do
+        local ok,event=pcall(EventInfo.GetMainEvent,EventInfo)
+        local info=ok and type(event)=="table" and event.EventStartInfo
+        local pass=type(info)=="table" and info.BattlePass
+        if type(event)=="table" and type(event.Title)=="string" and event.Title~=""
+            and type(info)=="table" and type(info.CurrencyName)=="string" and info.CurrencyName~=""
+            and type(pass)=="table" and type(pass.Rewards)=="table"
+            and tonumber(pass.TotalTiers) and tonumber(pass.TotalTiers)>0
+            and tonumber(pass.TierCost) and tonumber(pass.TierCost)>0
+            and type(Sync.NewShop)=="table" and next(Sync.NewShop)~=nil
+            and type(Sync.Weapons)=="table" and next(Sync.Weapons)~=nil then
+            return event
+        end
+        task.wait(0.25)
+    end
+end
+local Event=WaitForEvent()
 local BP=Event.EventStartInfo.BattlePass
 local HW=Remotes:WaitForChild("Events"):WaitForChild(Event.Title.."Remotes")
 local Currency=Config.currencyID~="" and Config.currencyID or Event.EventStartInfo.CurrencyName
@@ -273,15 +293,15 @@ local function canFarm()
     syncBase()
     local _,h,r=currentCharacter()
     return not blockedByVerification() and Core.canFarm({enabled=S.running,paused=S.paused or S.transaction or Validation.NoMovement==true,
-        waiting=S.waiting,ended=S.ended,timer=timer(),inMap=inMap(r),characterAlive=h~=nil,playerAlive=Player:GetAttribute("Alive")==true,member=member()})
+        waiting=S.waiting,ended=S.ended,timer=timer(),inMap=inMap(r),characterAlive=h~=nil,member=member()})
 end
 local function metrics()
     syncBase()
     local m=member()
-    local _,_,root=currentCharacter()
+    local _,humanoid,root=currentCharacter()
     return {user=Player.Name,candies=balance(),bag=string.format("%d/%d",S.bag,S.maxBag),
         tier=string.format("%d/%d",tonumber(passData().CurrentTier) or 0,BP.TotalTiers),map=findMap() and S.map.Name or "Lobby",
-        role=m and not m.Dead and Player:GetAttribute("Alive")==true and inMap(root) and m.Role or "Spectator",
+        role=Core.isRoundMember(m) and humanoid~=nil and inMap(root) and timer()>0 and not S.ended and m.Role or "Spectator",
         roundTime=timer()>0 and string.format("%02d:%02d",math.floor(timer()/60),timer()%60) or "N/A",
         elapsed=Core.duration(os.clock()-S.started),items=Core.itemLines(S.profile and S.profile.owned.Weapons or {},Sync.Weapons,Config.noteItems)}
 end
@@ -425,7 +445,7 @@ local function buildCompactUI()
     local function make(class,props,parent)
         local o=Instance.new(class);for k,v in pairs(props) do o[k]=v end;o.Parent=parent;return o
     end
-    local main=make("Frame",{Name="Panel",Size=UDim2.fromOffset(360,346),Position=UDim2.fromOffset(24,140),
+    local main=make("Frame",{Name="Panel",Size=UDim2.fromOffset(360,370),Position=UDim2.fromOffset(24,140),
         BackgroundColor3=Color3.fromRGB(10,13,11),BorderSizePixel=0,Active=true},screen)
     make("UICorner",{CornerRadius=UDim.new(0,14)},main)
     make("UIStroke",{Color=Color3.fromRGB(42,76,49),Thickness=1},main)
@@ -437,19 +457,19 @@ local function buildCompactUI()
             TextYAlignment=Enum.TextYAlignment.Center,BackgroundTransparency=1,TextTruncate=Enum.TextTruncate.AtEnd},main)
     end
     label("Title","Skider MM2 Kaitun",18,27,310,32,23,green)
-    label("Mode",Config.mode==1 and "CANDY / CRATES" or "CANDY / BATTLE PASS",19,62,320,20,11,Color3.fromRGB(143,169,148))
     label("UserCaption","USER",19,98,80,18,11,Color3.fromRGB(143,169,148))
     label("User",Player.Name,19,117,320,27,17)
-    label("CandyCaption","CANDIES",19,157,150,18,11,Color3.fromRGB(143,169,148))
-    local candies=label("Candies","Loading",19,177,150,28,23,green)
-    label("BagCaption","THIS ROUND",196,157,145,18,11,Color3.fromRGB(143,169,148))
-    local bag=label("Bag","0/50",196,177,145,28,23)
-    local state=label("Status","Status Farming : Starting",19,216,322,38,13,green)
+    label("Mode","Mode: "..(Config.mode==1 and "Crates" or "Battlepass"),19,146,320,20,13,green)
+    label("CandyCaption","CANDIES",19,181,150,18,11,Color3.fromRGB(143,169,148))
+    local candies=label("Candies","Loading",19,201,150,28,23,green)
+    label("BagCaption","THIS ROUND",196,181,145,18,11,Color3.fromRGB(143,169,148))
+    local bag=label("Bag","0/50",196,201,145,28,23)
+    local state=label("Status","Status Farming : Starting",19,240,322,38,13,green)
     state.TextWrapped=true;state.TextTruncate=Enum.TextTruncate.None
-    local info=label("Round","Lobby | Spectator | Tier 0",19,256,322,20,11,Color3.fromRGB(163,184,168))
-    local elapsed=label("Elapsed","Total time elapsed : 00:00:00",19,280,265,20,12)
-    label("Brand","mtrchill.click",19,315,220,19,13,green)
-    local pause=make("TextButton",{Text="PAUSE",Position=UDim2.fromOffset(272,309),Size=UDim2.fromOffset(69,26),Font=Enum.Font.FredokaOne,
+    local info=label("Round","Lobby | Spectator | Tier 0",19,280,322,20,11,Color3.fromRGB(163,184,168))
+    local elapsed=label("Elapsed","Total time elapsed : 00:00:00",19,304,265,20,12)
+    label("Brand","mtrchill.click",19,339,220,19,13,green)
+    local pause=make("TextButton",{Text="PAUSE",Position=UDim2.fromOffset(272,333),Size=UDim2.fromOffset(69,26),Font=Enum.Font.FredokaOne,
         TextSize=11,TextColor3=green,BackgroundColor3=Color3.fromRGB(24,39,27),BorderSizePixel=0},main)
     make("UICorner",{CornerRadius=UDim.new(0,7)},pause)
     connect(pause.Activated,function() S.paused=not S.paused;cancelMovement();pause.Text=S.paused and "RESUME" or "PAUSE" end)
@@ -560,8 +580,16 @@ local UsernameLabel = CreateText(
     Color3.fromRGB(220, 220, 220)
 )
 
+local ModeLabel = CreateText(
+    3,
+    'Mode: <font color="#55ff7f">' .. (Config.mode == 1 and "Crates" or "Battlepass") .. '</font>',
+    22,
+    Color3.fromRGB(220, 220, 220)
+)
+ModeLabel.Name = "Mode"
+
 local CandyRow = Instance.new("Frame")
-CandyRow.LayoutOrder = 3
+CandyRow.LayoutOrder = 4
 CandyRow.Size = UDim2.new(0, 560, 0, 75)
 CandyRow.BackgroundTransparency = 1
 CandyRow.Parent = CenterContainer
@@ -589,28 +617,28 @@ CandiesRoundLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
 CandiesRoundLabel.Parent = CandyRow
 
 local StatusLabel = CreateText(
-    4,
+    5,
     '⚡ Status Farming : <font color="#55ff7f">Waiting for next round...</font>',
     22,
     Color3.fromRGB(255, 255, 255)
 )
 
 local MapRoleTierLabel = CreateText(
-    5,
+    6,
     '🗺️ Map : <font color="#ffaa00">Lobby</font>   ;   🎭 Role : <font color="#00ffff">None</font>   ;   🏆 Tier Battlepass : <font color="#ff55ff">0/30</font>',
     20,
     Color3.fromRGB(200, 200, 200)
 )
 
 local TimeLabel = CreateText(
-    6,
+    7,
     '⏱️ Total time elapsed : <font color="#ffff55">00:00:00</font>',
     22,
     Color3.fromRGB(255, 255, 255)
 )
 
 local WebLabel = CreateText(
-    7,
+    8,
     "🌐 mtrchill.click",
     20,
     Color3.fromRGB(85, 255, 127)
@@ -668,7 +696,7 @@ function API.Snapshot()
     return {running=S.running,paused=S.paused,status=S.status,notice=S.notice,bag=S.bag,maxBag=S.maxBag,balance=balance(),
         tier=passData().CurrentTier,targetTier=TargetTier,map=findMap() and S.map.Name or "Lobby",eligible=not blockedByVerification(),
         canFarm=canFarm(),mode=Config.mode,receipts=S.receipts,errors=S.errors,purchaseBlocked=S.purchaseBlocked,webhook=S.webhookStatus,
-        available=S.available,collected=S.collected,base="scripts/01_auto_candy_farm.lua",
+        available=S.available,collected=S.collected,role=metrics().role,base="scripts/01_auto_candy_farm.lua",
         config={crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,speed=Config.speed,openDelay=Config.openDelay}}
 end
 function API.SetPaused(value) S.paused=value==true;cancelMovement() end
@@ -723,7 +751,7 @@ end
 connect(Gameplay:WaitForChild("PlayerDataChanged").OnClientEvent,function()
     task.defer(function() if S.running and not canFarm() then cancelMovement() end end)
 end)
-connect(Player:GetAttributeChangedSignal("Alive"),function() if Player:GetAttribute("Alive")~=true then cancelMovement() end end)
+connect(Player:GetAttributeChangedSignal("Alive"),function() if not canFarm() then cancelMovement() end end)
 connect(Player:GetAttributeChangedSignal("Authenticated"),cancelMovement)
 connect(Player.CharacterAdded,cancelMovement)
 task.spawn(function()
