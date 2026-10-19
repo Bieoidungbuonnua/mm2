@@ -1,5 +1,3 @@
--- Generated from scripts/01_auto_candy_farm.lua + src/core.lua + src/client.lua.
--- Original Candy Farm SHA256: d84068601436db1f6c1ae9ff3af6a1e5df07cded1f62346218abd372befdf467
 local supplied = ...
 local Env = type(supplied) == "table" and supplied or getgenv()
 local Core = (function()
@@ -20,7 +18,10 @@ function Core.config(raw, mode, fps)
     local crates = type(raw.Crates) == "table" and raw.Crates or {}
     local pass = type(raw.Battlepass) == "table" and raw.Battlepass or {}
     local hook = type(raw["Webhook Noti"]) == "table" and raw["Webhook Noti"] or {}
+    local fullscreenUI = raw.UI
+    if fullscreenUI == nil then fullscreenUI = raw.Ui end
     return {
+        fullscreenUI = fullscreenUI ~= false,
         mode = mode == 2 and 2 or 1,
         fps = math.floor(Core.number(fps, 60, 1, 2000)),
         speed = Core.number(raw["Spead Tween"], 120, 1, 1000000),
@@ -28,10 +29,10 @@ function Core.config(raw, mode, fps)
         crateThreshold = math.floor(Core.number(crates["Candies When"], 1800, 1, 1000000000000)),
         openDelay = Core.number(crates["Delay Open"], 0.5, 0, 60),
         passThreshold = math.floor(Core.number(pass["Candies When"], 1800, 1, 1000000000000)),
-        -- The server's TotalTiers is applied later; 29 is only a default.
+
         tierCap = math.floor(Core.number(pass["Tier Final"], 29, 1, 1000000)),
         buyFinalReward = pass["Buy Final Reward"] ~= false,
-        -- Zero means use the current FinalRewardCost from the live event.
+
         finalRewardThreshold = math.floor(Core.number(pass["Final Reward Candies When"], 0, 0, 1000000000)),
         crateID = type(crates["Crate ID"]) == "string" and crates["Crate ID"] or "",
         currencyID = type(raw["Currency ID"]) == "string" and raw["Currency ID"] or "",
@@ -53,7 +54,6 @@ function Core.config(raw, mode, fps)
     }
 end
 
--- Every predicate must be positive. Available candy alone is never permission.
 function Core.canFarm(info)
     return info.enabled == true and info.paused ~= true and info.waiting ~= true
         and info.ended ~= true and (tonumber(info.timer) or 0) > 0 and info.inMap == true
@@ -166,16 +166,16 @@ return Core
 
 end)()
 local AttachKaitun = (function()
--- Additions attached to the ORIGINAL Candy Farm. No replacement movement.
+
 return function(Context)
--- Client entry. Build embeds Core above this section.
+
 repeat task.wait() until game:IsLoaded()
 local Env = Context.env
 if game.PlaceId ~= 142823291 then error("[Skider] Join MM2 before running.") end
 if type(Env.SkiderMM2)=="table" and type(Env.SkiderMM2.Stop)=="function" then pcall(Env.SkiderMM2.Stop) end
 local Config=Core.config(Env.ConfigKaitunMM2Hallowen2026,Env.ModeFarming,Env.Fpslock)
 local Validation=type(Env.SkiderMM2Validation)=="table" and Env.SkiderMM2Validation or {}
-Env.SkiderMM2Validation=nil -- diagnostic overrides apply to one execution only
+Env.SkiderMM2Validation=nil
 local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
 local TweenService=game:GetService("TweenService")
@@ -306,7 +306,7 @@ local function applyProfile(data)
     end
     S.profile={event=clone(data[Event.Title]),materials=owned.Materials,owned=owned};S.profileAt=os.clock();return true
 end
--- One outstanding invocation; no repeat of an uncertain paid request.
+
 local function invoke(remote,args,timeout)
     if S.inflight and not S.inflight.done then return false,"Request already pending" end
     local op={done=false,ok=false,value=nil};S.inflight=op
@@ -408,7 +408,79 @@ local function purchaseBatch()
     end
     S.transaction=false;return true
 end
+local function buildCompactUI()
+    local coreGui=game:GetService("CoreGui")
+    for _,parent in ipairs({coreGui,PlayerGui}) do
+        for _,name in ipairs({"SkiderMM2Kaitun","SkiderMM2KaitunUI"}) do
+            local old=parent:FindFirstChild(name,true)
+            if old and old:IsA("ScreenGui") then old:Destroy() end
+        end
+    end
+    local screen=Instance.new("ScreenGui")
+    screen.Name="SkiderMM2Kaitun";screen.ResetOnSpawn=false;screen.DisplayOrder=50
+    screen.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+    local ok=pcall(function() screen.Parent=coreGui end)
+    if not ok then screen.Parent=PlayerGui end
+    local green=Color3.fromRGB(107,235,124)
+    local function make(class,props,parent)
+        local o=Instance.new(class);for k,v in pairs(props) do o[k]=v end;o.Parent=parent;return o
+    end
+    local main=make("Frame",{Name="Panel",Size=UDim2.fromOffset(360,346),Position=UDim2.fromOffset(24,140),
+        BackgroundColor3=Color3.fromRGB(10,13,11),BorderSizePixel=0,Active=true},screen)
+    make("UICorner",{CornerRadius=UDim.new(0,14)},main)
+    make("UIStroke",{Color=Color3.fromRGB(42,76,49),Thickness=1},main)
+    local bar=make("Frame",{Size=UDim2.new(1,-32,0,3),Position=UDim2.fromOffset(16,15),BackgroundColor3=green,BorderSizePixel=0},main)
+    make("UICorner",{CornerRadius=UDim.new(1,0)},bar)
+    local function label(name,text,x,y,w,h,size,color)
+        return make("TextLabel",{Name=name,Text=text,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),Font=Enum.Font.FredokaOne,
+            TextSize=size,TextColor3=color or Color3.fromRGB(236,245,238),TextXAlignment=Enum.TextXAlignment.Left,
+            TextYAlignment=Enum.TextYAlignment.Center,BackgroundTransparency=1,TextTruncate=Enum.TextTruncate.AtEnd},main)
+    end
+    label("Title","Skider MM2 Kaitun",18,27,310,32,23,green)
+    label("Mode",Config.mode==1 and "CANDY / CRATES" or "CANDY / BATTLE PASS",19,62,320,20,11,Color3.fromRGB(143,169,148))
+    label("UserCaption","USER",19,98,80,18,11,Color3.fromRGB(143,169,148))
+    label("User",Player.Name,19,117,320,27,17)
+    label("CandyCaption","CANDIES",19,157,150,18,11,Color3.fromRGB(143,169,148))
+    local candies=label("Candies","Loading",19,177,150,28,23,green)
+    label("BagCaption","THIS ROUND",196,157,145,18,11,Color3.fromRGB(143,169,148))
+    local bag=label("Bag","0/50",196,177,145,28,23)
+    local state=label("Status","Status Farming : Starting",19,216,322,38,13,green)
+    state.TextWrapped=true;state.TextTruncate=Enum.TextTruncate.None
+    local info=label("Round","Lobby | Spectator | Tier 0",19,256,322,20,11,Color3.fromRGB(163,184,168))
+    local elapsed=label("Elapsed","Total time elapsed : 00:00:00",19,280,265,20,12)
+    label("Brand","mtrchill.click",19,315,220,19,13,green)
+    local pause=make("TextButton",{Text="PAUSE",Position=UDim2.fromOffset(272,309),Size=UDim2.fromOffset(69,26),Font=Enum.Font.FredokaOne,
+        TextSize=11,TextColor3=green,BackgroundColor3=Color3.fromRGB(24,39,27),BorderSizePixel=0},main)
+    make("UICorner",{CornerRadius=UDim.new(0,7)},pause)
+    connect(pause.Activated,function() S.paused=not S.paused;cancelMovement();pause.Text=S.paused and "RESUME" or "PAUSE" end)
+    local close=make("TextButton",{Text="x",Position=UDim2.fromOffset(326,32),Size=UDim2.fromOffset(19,21),Font=Enum.Font.FredokaOne,
+        TextSize=15,BackgroundTransparency=1,TextColor3=Color3.fromRGB(140,165,146)},main)
+    connect(close.Activated,function() API.Stop() end)
+    local dragging,startInput,startPosition
+    connect(main.InputBegan,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            dragging=true;startInput=input.Position;startPosition=main.Position
+        end
+    end)
+    connect(UIS.InputEnded,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
+    end)
+    connect(UIS.InputChanged,function(input)
+        if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+            local d=input.Position-startInput;main.Position=startPosition+UDim2.fromOffset(d.X,d.Y)
+        end
+    end)
+    local bindings={
+        SetCandies=function(total,thisRound) candies.Text=tostring(total);bag.Text=tostring(thisRound) end,
+        SetStatus=function(text) state.Text="Status Farming : "..tostring(text) end,
+        SetInfo=function(map,role,tier) info.Text=tostring(map).." | "..tostring(role).." | Tier "..tostring(tier) end,
+        SetElapsed=function(time,roundTime) elapsed.Text="Total time elapsed : "..tostring(time);info.Text=info.Text.." | "..tostring(roundTime) end,
+    }
+    API.UI=bindings
+    return screen,bindings
+end
 local function buildUI()
+if not Config.fullscreenUI then return buildCompactUI() end
 local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Player
 local function richText(value)
@@ -420,12 +492,12 @@ for _, parent in ipairs({CoreGui, PlayerGui}) do
         if old and old:IsA("ScreenGui") then old:Destroy() end
     end
 end
--- 1. Tạo ScreenGui
+
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SkiderMM2KaitunUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 50
-ScreenGui.IgnoreGuiInset = true -- Phủ đen toàn bộ màn hình kể cả thanh Topbar
+ScreenGui.IgnoreGuiInset = true
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
 local success = pcall(function()
@@ -435,7 +507,6 @@ if not success then
     ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 end
 
--- 2. Màn hình đen Full Screen
 local BlackScreen = Instance.new("Frame")
 BlackScreen.Name = "BlackScreen"
 BlackScreen.Size = UDim2.new(1, 0, 1, 0)
@@ -444,13 +515,12 @@ BlackScreen.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 BlackScreen.BorderSizePixel = 0
 BlackScreen.Parent = ScreenGui
 
--- 3. Cụm chứa chữ vô hình (Để tự động căn giữa mọi thứ mà không có khung)
 local CenterContainer = Instance.new("Frame")
 CenterContainer.Name = "CenterContainer"
 CenterContainer.Size = UDim2.new(0, 800, 0, 520)
 CenterContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
 CenterContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-CenterContainer.BackgroundTransparency = 1 -- Hoàn toàn trong suốt, không khung
+CenterContainer.BackgroundTransparency = 1
 CenterContainer.Parent = BlackScreen
 
 local UIListLayout = Instance.new("UIListLayout")
@@ -458,9 +528,8 @@ UIListLayout.Parent = CenterContainer
 UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-UIListLayout.Padding = UDim.new(0, 14) -- Khoảng cách thoáng giữa các dòng
+UIListLayout.Padding = UDim.new(0, 14)
 
--- Hàm tạo chữ nhanh với Font FredokaOne và hỗ trợ RichText (đổi màu từng phần chữ)
 local function CreateText(order, text, size, color)
     local label = Instance.new("TextLabel")
     label.LayoutOrder = order
@@ -476,17 +545,13 @@ local function CreateText(order, text, size, color)
     return label
 end
 
--- ================= THIẾT KẾ CÁC DÒNG CHỮ TRÊN NỀN ĐEN =================
-
--- 1. Tên UI (To và nổi bật nhất ở trên cùng)
 local TitleLabel = CreateText(
     1,
     "🔪 Skider MM2 Kaitun 🎃",
     44,
-    Color3.fromRGB(85, 255, 127) -- Xanh lá sáng
+    Color3.fromRGB(85, 255, 127)
 )
 
--- 2. Username
 local playerName = LocalPlayer and LocalPlayer.Name or "Player"
 local UsernameLabel = CreateText(
     2,
@@ -495,7 +560,6 @@ local UsernameLabel = CreateText(
     Color3.fromRGB(220, 220, 220)
 )
 
--- 3. Khu vực hiển thị Candies & Candies This Round (Đặt cạnh nhau ở trung tâm)
 local CandyRow = Instance.new("Frame")
 CandyRow.LayoutOrder = 3
 CandyRow.Size = UDim2.new(0, 560, 0, 75)
@@ -524,7 +588,6 @@ CandiesRoundLabel.TextSize = 18
 CandiesRoundLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
 CandiesRoundLabel.Parent = CandyRow
 
--- 4. Status Farming
 local StatusLabel = CreateText(
     4,
     '⚡ Status Farming : <font color="#55ff7f">Waiting for next round...</font>',
@@ -532,7 +595,6 @@ local StatusLabel = CreateText(
     Color3.fromRGB(255, 255, 255)
 )
 
--- 5. Map ; Role ; Tier Battlepass
 local MapRoleTierLabel = CreateText(
     5,
     '🗺️ Map : <font color="#ffaa00">Lobby</font>   ;   🎭 Role : <font color="#00ffff">None</font>   ;   🏆 Tier Battlepass : <font color="#ff55ff">0/30</font>',
@@ -540,7 +602,6 @@ local MapRoleTierLabel = CreateText(
     Color3.fromRGB(200, 200, 200)
 )
 
--- 6. Total time elapsed
 local TimeLabel = CreateText(
     6,
     '⏱️ Total time elapsed : <font color="#ffff55">00:00:00</font>',
@@ -548,30 +609,12 @@ local TimeLabel = CreateText(
     Color3.fromRGB(255, 255, 255)
 )
 
--- 7. Link web mtrchill.click
 local WebLabel = CreateText(
     7,
     "🌐 mtrchill.click",
     20,
     Color3.fromRGB(85, 255, 127)
 )
-
--- Dòng nhắc phím tắt mờ ở dưới cùng
-local HintLabel = CreateText(
-    8,
-    "💡 Press [Left Ctrl] to Toggle UI",
-    14,
-    Color3.fromRGB(90, 90, 90)
-)
-
--- ================= CHỨC NĂNG HOẠT ĐỘNG =================
-
--- 1. Phím tắt Left Ctrl để Bật / Tắt UI
-connect(UIS.InputBegan,function(input, gameProcessed)
-    if not gameProcessed and input.KeyCode == Enum.KeyCode.LeftControl then
-        BlackScreen.Visible = not BlackScreen.Visible
-    end
-end)
 
 StatusLabel.Size = UDim2.new(1, 0, 0, 50)
 StatusLabel.TextWrapped = true
@@ -636,7 +679,7 @@ pcall(function()
 end)
 if typeof(setfpscap)=="function" then pcall(setfpscap,Config.fps) end
 Ui,Labels=buildUI()
--- Cached data initializes display only; each purchase starts with a server read.
+
 applyProfile(LoadModule(RS:WaitForChild("Modules"):WaitForChild("ProfileData")))
 local bagGui=PlayerGui:FindFirstChild("MainGUI")
 bagGui=bagGui and bagGui:FindFirstChild("Game");bagGui=bagGui and bagGui:FindFirstChild("CoinBags")
@@ -733,7 +776,7 @@ end)
 Notify("Started","Mode "..Config.mode.." | "..(Config.mode==1 and "Crates" or "Battle Pass"))
 local function beforeCycle()
     syncBase()
-            -- Tier 30 + ineligible: DISPLAY ONLY. No farming, purchase, claim or prompt.
+
             if blockedByVerification() then cancelMovement();Context.abortReset();status("Required Buy/Premium Or Verification Age");task.wait(0.5);return false end
             if S.paused then status("Paused");task.wait(0.3);return false end
             if not S.profile then status("Loading server profile");if not refreshProfile() then task.wait(2) end;return false end
@@ -781,7 +824,7 @@ function API.BeforeCycle()
     end
     return allowed==true
 end
--- Disable the original farm when permission disappears. Only BeforeCycle enables it.
+
 task.spawn(function()
     while S.running do
         local base=syncBase()
@@ -801,7 +844,7 @@ API.Connect=connect
 API.Gui=Ui
 log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,targetTier=TargetTier,speed=Config.speed,
     validation={movement=Validation.NoMovement==true,spending=Validation.NoSpending==true}})
-print("[Skider] Skider MM2 Kaitun ready | mode "..Config.mode.." | Left Ctrl toggles UI")
+print("[Skider] Skider MM2 Kaitun ready | mode "..Config.mode)
 return API
 
 end
@@ -809,29 +852,8 @@ end
 end)()
 if type(Env.SkiderMM2)=="table" and type(Env.SkiderMM2.Stop)=="function" then pcall(Env.SkiderMM2.Stop) end
 if type(Env.MM2CandyConfig)=="table" then Env.MM2CandyConfig.AutoCandy=false end
---========================================================
--- MM2 HALLOWEEN 2026 - AUTO CANDY SAFE FARM
---
--- Features:
---   + Target đúng ServerCoinPart / CoinID = "Candy"
---   + Tween Speed = 40
---   + Nghỉ 2s sau mỗi lần collect
---   + Full bag 50/50:
---       -> stop tween
---       -> chờ 2s
---       -> reset character
---       -> đợi CoinsStarted round mới
---       -> tự farm tiếp nếu Auto Candy vẫn ON
---   + GUI ON/OFF
---   + Safe Tween chia nhỏ quãng đường
---   + Không FireServer
---========================================================
 
 repeat task.wait() until game:IsLoaded()
-
---========================================================
--- SERVICES
---========================================================
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -846,38 +868,25 @@ until Player
     and Player.Character
     and Player:FindFirstChild("PlayerGui")
 
---========================================================
--- CONFIG
---========================================================
-
 local Config = {
     AutoCandy = false,
 
-    -- tốc độ tween
     TweenSpeed = 120,
 
-    -- nghỉ sau mỗi Candy
     CollectDelay = 1,
 
-    -- full bag rồi nghỉ trước reset
     ResetDelay = 2,
 
-    -- vị trí HRP so với Coin_Server
     YOffset = 1.8,
 
-    -- chia tween thành đoạn nhỏ
     SafeTween = true,
 
-    -- độ dài tối đa mỗi segment
     SegmentDistance = 14,
 
-    -- nghỉ nhẹ giữa segment
     SegmentDelay = 0.04,
 
-    -- thời gian chờ server xác nhận collect
     CollectTimeout = 4,
 
-    -- thời gian blacklist Candy lỗi
     FailedTargetDelay = 3,
 }
 
@@ -887,10 +896,6 @@ Config.CollectDelay=Settings.collectDelay
 Config.ResetDelay=Settings.resetDelay
 Config.SegmentDistance=Settings.segment
 Env.MM2CandyConfig = Config
-
---========================================================
--- REMOTES
---========================================================
 
 local Remotes =
     ReplicatedStorage:
@@ -908,10 +913,6 @@ local CoinsStarted =
     Gameplay:
     WaitForChild("CoinsStarted")
 
---========================================================
--- STATE
---========================================================
-
 local CurrentBag = 0
 local MaxBag = 50
 
@@ -926,10 +927,6 @@ local FailedTargets =
     setmetatable({}, {
         __mode = "k"
     })
-
---========================================================
--- CHARACTER
---========================================================
 
 local function GetCharacter()
 
@@ -964,10 +961,6 @@ local function GetCharacter()
         Root
 end
 
---========================================================
--- CANCEL TWEEN
---========================================================
-
 local function CancelTween()
 
     if CurrentTween then
@@ -982,10 +975,6 @@ local function CancelTween()
     IsMoving = false
     CurrentTarget = nil
 end
-
---========================================================
--- VALID CANDY
---========================================================
 
 local function IsValidCandy(Object)
 
@@ -1006,10 +995,6 @@ local function IsValidCandy(Object)
         return false
     end
 
-    ----------------------------------------------------
-    -- phải là coin server thật
-    ----------------------------------------------------
-
     if not CollectionService:
         HasTag(
             Object,
@@ -1019,19 +1004,11 @@ local function IsValidCandy(Object)
         return false
     end
 
-    ----------------------------------------------------
-    -- event Halloween đổi CoinID -> Candy
-    ----------------------------------------------------
-
     if Object:GetAttribute("CoinID")
         ~= "Candy" then
 
         return false
     end
-
-    ----------------------------------------------------
-    -- đã collect
-    ----------------------------------------------------
 
     if Object:GetAttribute("Collected")
         == true then
@@ -1041,10 +1018,6 @@ local function IsValidCandy(Object)
 
     return true
 end
-
---========================================================
--- FIND NEAREST CANDY
---========================================================
 
 local function GetNearestCandy()
 
@@ -1099,10 +1072,6 @@ local function GetNearestCandy()
         ClosestDistance
 end
 
---========================================================
--- TWEEN SEGMENT
---========================================================
-
 local function TweenSegment(
     Root,
     Position
@@ -1133,10 +1102,6 @@ local function TweenSegment(
             Duration,
             0.05
         )
-
-    ----------------------------------------------------
-    -- giữ hướng nhìn hiện tại
-    ----------------------------------------------------
 
     local Look =
         Root.CFrame.LookVector
@@ -1169,19 +1134,11 @@ local function TweenSegment(
             Position + FlatLook
         )
 
-    ----------------------------------------------------
-    -- giảm velocity
-    ----------------------------------------------------
-
     Root.AssemblyLinearVelocity =
         Vector3.zero
 
     Root.AssemblyAngularVelocity =
         Vector3.zero
-
-    ----------------------------------------------------
-    -- tween
-    ----------------------------------------------------
 
     local Tween =
         TweenService:Create(
@@ -1219,10 +1176,6 @@ local function TweenSegment(
     return true
 end
 
---========================================================
--- SAFE TWEEN TO CANDY
---========================================================
-
 local function SafeTweenTo(
     Candy
 )
@@ -1240,10 +1193,6 @@ local function SafeTweenTo(
 
     IsMoving = true
     CurrentTarget = Candy
-
-    ----------------------------------------------------
-    -- đi từng segment
-    ----------------------------------------------------
 
     while Config.AutoCandy
         and not WaitingNextRound
@@ -1276,19 +1225,11 @@ local function SafeTweenTo(
         local Distance =
             Delta.Magnitude
 
-        ------------------------------------------------
-        -- đủ gần rồi
-        ------------------------------------------------
-
         if Distance <= 2.2 then
             break
         end
 
         local TargetPosition
-
-        ------------------------------------------------
-        -- Safe Tween
-        ------------------------------------------------
 
         if Config.SafeTween
             and Distance
@@ -1326,10 +1267,6 @@ local function SafeTweenTo(
         )
     end
 
-    ----------------------------------------------------
-    -- final approach
-    ----------------------------------------------------
-
     if Config.AutoCandy
         and not WaitingNextRound
         and IsValidCandy(Candy) then
@@ -1366,10 +1303,6 @@ local function SafeTweenTo(
     return true
 end
 
---========================================================
--- WAIT FOR SERVER COLLECT
---========================================================
-
 local function WaitForCollect(
     Candy,
     OldBag
@@ -1396,20 +1329,12 @@ local function WaitForCollect(
 
         end
 
-        ------------------------------------------------
-        -- object bị server remove
-        ------------------------------------------------
-
         if not Candy
             or not Candy.Parent then
 
             return true,
                 "Removed"
         end
-
-        ------------------------------------------------
-        -- server mark collected
-        ------------------------------------------------
 
         if Candy:GetAttribute(
             "Collected"
@@ -1418,10 +1343,6 @@ local function WaitForCollect(
             return true,
                 "CollectedAttribute"
         end
-
-        ------------------------------------------------
-        -- CoinCollected cập nhật bag
-        ------------------------------------------------
 
         if CurrentBag
             > OldBag then
@@ -1439,10 +1360,6 @@ local function WaitForCollect(
         "Timeout"
 end
 
---========================================================
--- RESET AFTER FULL BAG
---========================================================
-
 local function ResetCharacterAfterFullBag()
 
     if ResettingCharacter
@@ -1453,10 +1370,6 @@ local function ResetCharacterAfterFullBag()
 
     ResettingCharacter = true
     WaitingNextRound = true
-
-    ----------------------------------------------------
-    -- stop movement ngay
-    ----------------------------------------------------
 
     CancelTween()
 
@@ -1482,17 +1395,9 @@ local function ResetCharacterAfterFullBag()
         "============================================"
     )
 
-    ----------------------------------------------------
-    -- chờ 2s
-    ----------------------------------------------------
-
     task.wait(
         Config.ResetDelay
     )
-
-    ----------------------------------------------------
-    -- vẫn đang chờ next round
-    ----------------------------------------------------
 
     if not WaitingNextRound then
 
@@ -1501,10 +1406,6 @@ local function ResetCharacterAfterFullBag()
 
         return
     end
-
-    ----------------------------------------------------
-    -- reset
-    ----------------------------------------------------
 
     local Character =
         Player.Character
@@ -1524,19 +1425,11 @@ local function ResetCharacterAfterFullBag()
                 "[Candy] Resetting character..."
             )
 
-            ------------------------------------------------
-            -- method 1
-            ------------------------------------------------
-
             pcall(function()
                 Humanoid.Health = 0
             end)
 
             task.wait(0.15)
-
-            ------------------------------------------------
-            -- fallback
-            ------------------------------------------------
 
             if Humanoid.Parent
                 and Humanoid.Health > 0 then
@@ -1562,7 +1455,6 @@ local function ResetCharacterAfterFullBag()
     )
 end
 
--- Kaitun attaches to the original local state and functions below.
 local Addon=AttachKaitun({
     env=Env,config=Config,cancel=CancelTween,validCandy=IsValidCandy,
     snapshot=function()
@@ -1572,10 +1464,6 @@ local Addon=AttachKaitun({
     abortReset=function() WaitingNextRound=false;ResettingCharacter=false end,
 })
 local Gui=Addon.Gui
-
---========================================================
--- COIN COLLECTED
---========================================================
 
 Addon.Connect(CoinCollected.OnClientEvent,function(
     CoinID,
@@ -1615,10 +1503,6 @@ Addon.Connect(CoinCollected.OnClientEvent,function(
         )
     )
 
-    ----------------------------------------------------
-    -- FULL BAG
-    ----------------------------------------------------
-
     if CurrentBag >= MaxBag
         and MaxBag > 0
         and Config.AutoCandy then
@@ -1628,10 +1512,6 @@ Addon.Connect(CoinCollected.OnClientEvent,function(
         )
     end
 end)
-
---========================================================
--- NEW ROUND
---========================================================
 
 Addon.Connect(CoinsStarted.OnClientEvent,function()
 
@@ -1676,10 +1556,6 @@ Addon.Connect(CoinsStarted.OnClientEvent,function()
     )
 end)
 
---========================================================
--- CHARACTER RESPAWN
---========================================================
-
 Addon.Connect(Player.CharacterAdded,function(Character)
 
     CancelTween()
@@ -1697,10 +1573,6 @@ Addon.Connect(Player.CharacterAdded,function(Character)
         )
     end
 end)
-
---========================================================
--- MAIN FARM LOOP
---========================================================
 
 task.spawn(function()
 
@@ -1736,20 +1608,11 @@ task.spawn(function()
 
         task.wait(0.1)
 
-        -- All Candy targeting, movement, collect and full-bag handling below are original.
         if not Addon.BeforeCycle() then continue end
-
-        ------------------------------------------------
-        -- disabled
-        ------------------------------------------------
 
         if not Config.AutoCandy then
             continue
         end
-
-        ------------------------------------------------
-        -- full bag / waiting round
-        ------------------------------------------------
 
         if WaitingNextRound then
 
@@ -1758,17 +1621,9 @@ task.spawn(function()
             continue
         end
 
-        ------------------------------------------------
-        -- already moving
-        ------------------------------------------------
-
         if IsMoving then
             continue
         end
-
-        ------------------------------------------------
-        -- character validation
-        ------------------------------------------------
 
         local Character,
             Humanoid,
@@ -1782,10 +1637,6 @@ task.spawn(function()
             continue
         end
 
-        ------------------------------------------------
-        -- safety full bag check
-        ------------------------------------------------
-
         if MaxBag > 0
             and CurrentBag >= MaxBag then
 
@@ -1798,10 +1649,6 @@ task.spawn(function()
             continue
         end
 
-        ------------------------------------------------
-        -- nearest Candy
-        ------------------------------------------------
-
         local Candy,
             Distance =
             GetNearestCandy()
@@ -1812,10 +1659,6 @@ task.spawn(function()
 
             continue
         end
-
-        ------------------------------------------------
-        -- save bag before collect
-        ------------------------------------------------
 
         local OldBag =
             CurrentBag
@@ -1831,18 +1674,10 @@ task.spawn(function()
             )
         )
 
-        ------------------------------------------------
-        -- tween
-        ------------------------------------------------
-
         local Reached =
             SafeTweenTo(
                 Candy
             )
-
-        ------------------------------------------------
-        -- disabled while tweening
-        ------------------------------------------------
 
         if not Config.AutoCandy then
             continue
@@ -1851,10 +1686,6 @@ task.spawn(function()
         if WaitingNextRound then
             continue
         end
-
-        ------------------------------------------------
-        -- wait collect
-        ------------------------------------------------
 
         if Reached then
 
@@ -1865,20 +1696,12 @@ task.spawn(function()
                     OldBag
                 )
 
-            ------------------------------------------------
-            -- SUCCESS
-            ------------------------------------------------
-
             if Success then
 
                 print(
                     "[Candy] SUCCESS:",
                     Reason
                 )
-
-                ------------------------------------------------
-                -- Bag full?
-                ------------------------------------------------
 
                 if CurrentBag
                     >= MaxBag
@@ -1890,10 +1713,6 @@ task.spawn(function()
 
                     continue
                 end
-
-                ------------------------------------------------
-                -- Nghỉ 2 giây mới đi Candy tiếp
-                ------------------------------------------------
 
                 local DelayStart =
                     os.clock()
@@ -1907,10 +1726,6 @@ task.spawn(function()
 
                     task.wait(0.1)
                 end
-
-            ------------------------------------------------
-            -- FAILED
-            ------------------------------------------------
 
             else
 
