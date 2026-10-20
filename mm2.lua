@@ -1,5 +1,220 @@
 local supplied = ...
 local Env = type(supplied) == "table" and supplied or getgenv()
+local AttachCFrameMovement = (function()
+return function(context)
+    local Workspace=game:GetService("Workspace")
+    local Players=game:GetService("Players")
+    local Pathfinding=game:GetService("PathfindingService")
+    local RunService=game:GetService("RunService")
+    local generation=0
+    local blockedConnection
+    local maxStep=3.5
+    local nearDistance=7
+
+    local function stop()
+        generation=generation+1
+        if blockedConnection then blockedConnection:Disconnect();blockedConnection=nil end
+        context.moving(false,nil)
+    end
+    local function allowed(token,character)
+        if token~=generation or not context.allowed() then return false end
+        local current,_,root=context.character()
+        return root~=nil and current==character
+    end
+    local function params()
+        local filter={}
+        for _,player in ipairs(Players:GetPlayers()) do
+            if player.Character then filter[#filter+1]=player.Character end
+        end
+        local container=context.container()
+        if container then filter[#filter+1]=container end
+        if Workspace.CurrentCamera then filter[#filter+1]=Workspace.CurrentCamera end
+        local result=RaycastParams.new()
+        result.FilterType=Enum.RaycastFilterType.Exclude
+        result.FilterDescendantsInstances=filter
+        result.IgnoreWater=false
+        result.RespectCanCollide=true
+        return result
+    end
+    local function clearance(humanoid,root)
+        return math.clamp(humanoid.HipHeight+root.Size.Y/2,2,4.5)
+    end
+    local function floor(position,rayParams)
+        local hit=Workspace:Raycast(position+Vector3.new(0,5,0),Vector3.new(0,-18,0),rayParams)
+        if not hit or hit.Normal.Y<0.35 or position.Y-hit.Position.Y>8.5 then return nil end
+        return hit
+    end
+    local function wall(from,to,rayParams)
+        local delta=to-from
+        if delta.Magnitude<0.01 then return false end
+        local flat=Vector3.new(delta.X,0,delta.Z)
+        local side=flat.Magnitude>0.01 and Vector3.new(-flat.Z,0,flat.X).Unit or Vector3.zero
+        for _,offset in ipairs({Vector3.zero,side,-side}) do
+            if Workspace:Raycast(from+offset,to-from,rayParams) then return true end
+        end
+        return false
+    end
+    local function goal(coin,humanoid,root,rayParams)
+        local hit=Workspace:Raycast(coin.Position+Vector3.new(0,0.5,0),Vector3.new(0,-18,0),rayParams)
+        if not hit or hit.Normal.Y<0.35 then return nil end
+        return Vector3.new(coin.Position.X,math.max(coin.Position.Y+context.yOffset,hit.Position.Y+clearance(humanoid,root)),coin.Position.Z),hit.Position
+    end
+    local function clearSegment(from,to,rayParams)
+        if wall(from,to,rayParams) then return false end
+        local distance=(to-from).Magnitude
+        local count=math.max(1,math.ceil(distance/1.5))
+        for i=1,count do
+            if not floor(from:Lerp(to,i/count),rayParams) then return false end
+        end
+        return true
+    end
+    local function confirmed(coin,bag)
+        return not coin.Parent or coin:GetAttribute("Collected")==true or context.bag()>bag
+    end
+    local function apply(root,position,direction)
+        local flat=Vector3.new(direction.X,0,direction.Z)
+        if flat.Magnitude<0.01 then
+            local look=root.CFrame.LookVector
+            flat=Vector3.new(look.X,0,look.Z)
+        end
+        if flat.Magnitude<0.01 then flat=Vector3.new(0,0,-1) end
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        root.CFrame=CFrame.lookAt(position,position+flat.Unit)
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+    end
+    local function stepTo(target,coin,token,character,rayParams,bag,jump,isBlocked,final)
+        local _,_,root=context.character()
+        if not root then return false,"CharacterLost" end
+        local start=root.Position
+        local length=(target-start).Magnitude
+        local progress=0
+        local deadline=os.clock()+math.max(3,length/math.max(context.speed(),1)*3+2)
+        while allowed(token,character) do
+            if confirmed(coin,bag) then return true,"Collected" end
+            if not context.valid(coin) then return false,"TargetInactive" end
+            if isBlocked and isBlocked() then return false,"Blocked" end
+            if os.clock()>deadline then return false,"MovementTimeout" end
+            local _,humanoid,currentRoot=context.character()
+            if currentRoot~=root then return false,"CharacterLost" end
+            local destination=final and goal(coin,humanoid,root,rayParams) or target
+            if not destination then return false,"UnsafeFloor" end
+            local delta=destination-root.Position
+            if delta.Magnitude<=(final and 0.6 or 1) then return true,"Reached" end
+            if not final and (coin.Position-root.Position).Magnitude<=nearDistance then
+                local last=goal(coin,humanoid,root,rayParams)
+                if last and clearSegment(root.Position,last,rayParams) then return true,"FinalApproach" end
+            end
+            local dt=RunService.Heartbeat:Wait()
+
+            if not allowed(token,character) then return false,"Stopped" end
+            if confirmed(coin,bag) then return true,"Collected" end
+            if not context.valid(coin) then return false,"TargetInactive" end
+            if isBlocked and isBlocked() then return false,"Blocked" end
+            if final then
+                destination=goal(coin,humanoid,root,rayParams)
+                if not destination then return false,"UnsafeFloor" end
+            end
+            local speed=final and math.min(context.speed(),32) or context.speed()
+            local step=math.min(math.max(dt,0)*speed,final and 0.75 or maxStep)
+            if step<=0 then return false,"NoProgress" end
+            if jump then
+                progress=math.min(1,progress+step/math.max(length,0.01))
+                local arc=start:Lerp(destination,progress)+Vector3.new(0,16*progress*(1-progress),0)
+                delta=arc-root.Position
+            else
+                delta=destination-root.Position
+            end
+            local nextPosition=delta.Magnitude>0.001 and root.Position+delta.Unit*math.min(step,delta.Magnitude) or root.Position
+            local hit=floor(nextPosition,rayParams)
+            if not hit then return false,"UnsafeFloor" end
+            local rise=hit.Position.Y+clearance(humanoid,root)-nextPosition.Y
+            if rise>1.5 then return false,"Blocked" end
+            if rise>0 then nextPosition=nextPosition+Vector3.new(0,rise,0) end
+            if (nextPosition-root.Position).Magnitude>maxStep then return false,"StepTooHigh" end
+            if wall(root.Position,nextPosition,rayParams) then return false,"Blocked" end
+            apply(root,nextPosition,delta)
+        end
+        return false,"Stopped"
+    end
+    local function move(coin)
+        stop()
+        local token=generation
+        local character,humanoid,root=context.character()
+        if not root or not context.allowed() or not context.valid(coin) then return false,"TargetInactive" end
+        if (coin.Position-root.Position).Magnitude>350 then return false,"TargetTooFar" end
+        context.moving(true,coin)
+        local bag=context.bag()
+        local rayParams=params()
+        for _=1,4 do
+            if not allowed(token,character) then return false,"Stopped" end
+            if confirmed(coin,bag) then return true,"Collected" end
+            if not context.valid(coin) then return false,"TargetInactive" end
+            local finish,ground=goal(coin,humanoid,root,rayParams)
+            if not finish then return false,"UnsafeFloor" end
+            if (finish-root.Position).Magnitude<=nearDistance and clearSegment(root.Position,finish,rayParams) then
+                return stepTo(finish,coin,token,character,rayParams,bag,false,nil,true)
+            end
+            local path=Pathfinding:CreatePath({AgentRadius=2,AgentHeight=5,AgentCanJump=true,AgentCanClimb=true,WaypointSpacing=4})
+            local ok=pcall(path.ComputeAsync,path,root.Position,ground)
+            if not allowed(token,character) then return false,"Stopped" end
+            if confirmed(coin,bag) then return true,"Collected" end
+            if ok and path.Status==Enum.PathStatus.Success then
+                local points=path:GetWaypoints()
+                local activeIndex=1
+                local blocked=false
+                blockedConnection=path.Blocked:Connect(function(index) if index>=activeIndex then blocked=true end end)
+                local reason
+                for index,point in ipairs(points) do
+                    activeIndex=index
+                    if index>1 then
+                        local target=point.Position+Vector3.new(0,clearance(humanoid,root),0)
+                        local success
+                        success,reason=stepTo(target,coin,token,character,rayParams,bag,point.Action==Enum.PathWaypointAction.Jump,function() return blocked end,false)
+                        if not success or reason=="FinalApproach" or reason=="Collected" then break end
+                    end
+                end
+                if blockedConnection then blockedConnection:Disconnect();blockedConnection=nil end
+                if reason=="Collected" then return true,reason end
+                if reason=="Stopped" or reason=="CharacterLost" or reason=="TargetInactive" then return false,reason end
+                finish=goal(coin,humanoid,root,rayParams)
+                if finish and (finish-root.Position).Magnitude<=nearDistance and clearSegment(root.Position,finish,rayParams) then
+                    local reached,why=stepTo(finish,coin,token,character,rayParams,bag,false,nil,true)
+                    if reached or why=="Stopped" then return reached,why end
+                end
+            end
+            task.wait(0.08)
+        end
+        return false,"RouteRetriesExceeded"
+    end
+    local function moveToCandy(coin)
+        local token=generation+1
+        local ok,reached,reason=pcall(move,coin)
+        if token==generation then
+            if blockedConnection then blockedConnection:Disconnect();blockedConnection=nil end
+            context.moving(false,nil)
+        end
+        if not ok then
+            if context.failure then context.failure(tostring(reached)) end
+            return false,"MovementError"
+        end
+        return reached,reason
+    end
+    local function collectDelay(delay,coin)
+        local character,humanoid,root=context.character()
+        if not root or not context.allowed() or not context.valid(coin) then return delay end
+        local rayParams=params()
+        local finish=goal(coin,humanoid,root,rayParams)
+        if finish and (finish-root.Position).Magnitude<=nearDistance and clearSegment(root.Position,finish,rayParams) then
+            return math.min(delay,0.05)
+        end
+        return delay
+    end
+    return {MoveToCandy=moveToCandy,Stop=stop,CollectDelay=collectDelay}
+end
+
+end)()
 local Core = (function()
 local Core = {}
 
@@ -298,7 +513,6 @@ local Validation=type(Env.SkiderMM2Validation)=="table" and Env.SkiderMM2Validat
 Env.SkiderMM2Validation=nil
 local Players=game:GetService("Players")
 local RS=game:GetService("ReplicatedStorage")
-local TweenService=game:GetService("TweenService")
 local Collection=game:GetService("CollectionService")
 local Http=game:GetService("HttpService")
 local UIS=game:GetService("UserInputService")
@@ -406,6 +620,16 @@ local function inMap(root)
     if not root or not findMap() or not S.mapCF then return false end
     local p=S.mapCF:PointToObjectSpace(root.Position);local half=S.mapSize/2+Vector3.new(8,12,8)
     return math.abs(p.X)<=half.X and math.abs(p.Y)<=half.Y and math.abs(p.Z)<=half.Z
+end
+local function isActiveCandy(coin)
+    if not Context.validCandy(coin) or not findMap() or not inMap(coin) then return false end
+    local container=S.map:FindFirstChild("CoinContainer")
+    if not container or not coin:IsDescendantOf(container) then return false end
+    local visual=coin:FindFirstChild("CoinVisual",true)
+    return visual~=nil and visual:IsA("BasePart") and Collection:HasTag(visual,"CoinVisual")
+        and visual:GetAttribute("CoinID")=="Candy" and visual:GetAttribute("Delete")~=true
+        and visual:GetAttribute("Collected")~=true and visual:GetAttribute("RoundEnd")~=true
+        and visual.Transparency<1
 end
 local function canFarm()
     syncBase()
@@ -982,7 +1206,7 @@ task.spawn(function()
         if blockedByVerification() then Context.abortReset() end
         local count=0
         for _,coin in ipairs(Collection:GetTagged("ServerCoinPart")) do
-            if Context.validCandy(coin) then count=count+1 end
+            if isActiveCandy(coin) then count=count+1 end
         end
         S.available=count
         task.wait(0.1)
@@ -990,6 +1214,10 @@ task.spawn(function()
 end)
 API.Connect=connect
 API.Gui=Ui
+API.CanFarm=canFarm
+API.IsActiveCandy=isActiveCandy
+API.CoinContainer=function() local map=findMap();return map and map:FindFirstChild("CoinContainer") end
+API.MovementError=function(message) log("MOVEMENT_ERROR",{message=message}) end
 log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,targetTier=TargetTier,speed=Config.speed,
     validation={movement=Validation.NoMovement==true,spending=Validation.NoSpending==true}})
 
@@ -1004,7 +1232,6 @@ if type(Env.MM2CandyConfig)=="table" then Env.MM2CandyConfig.AutoCandy=false end
 repeat task.wait() until game:IsLoaded()
 
 local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
@@ -1067,6 +1294,7 @@ local MaxBag = 50
 local IsMoving = false
 local CurrentTween = nil
 local CurrentTarget = nil
+local Movement,Addon
 
 local WaitingNextRound = false
 local ResettingCharacter = false
@@ -1110,18 +1338,9 @@ local function GetCharacter()
 end
 
 local function CancelTween()
-
-    if CurrentTween then
-
-        pcall(function()
-            CurrentTween:Cancel()
-        end)
-
-        CurrentTween = nil
-    end
-
-    IsMoving = false
-    CurrentTarget = nil
+    if Movement then Movement.Stop() end
+    IsMoving=false
+    CurrentTarget=nil
 end
 
 local function IsValidCandy(Object)
@@ -1168,287 +1387,27 @@ local function IsValidCandy(Object)
 end
 
 local function GetNearestCandy()
-
-    local _, _, Root =
-        GetCharacter()
-
-    if not Root then
-        return
-    end
-
-    local Closest = nil
-    local ClosestDistance =
-        math.huge
-
-    local Tagged =
-        CollectionService:
-        GetTagged(
-            "ServerCoinPart"
-        )
-
-    for _, Candy in ipairs(Tagged) do
-
-        if IsValidCandy(Candy) then
-
-            local IgnoreUntil =
-                FailedTargets[Candy]
-
-            if not IgnoreUntil
-                or os.clock()
-                    >= IgnoreUntil then
-
-                local Distance =
-                    (
-                        Root.Position
-                        - Candy.Position
-                    ).Magnitude
-
-                if Distance
-                    < ClosestDistance then
-
-                    Closest =
-                        Candy
-
-                    ClosestDistance =
-                        Distance
-                end
+    local _,_,root=GetCharacter()
+    if not root or not Addon then return end
+    local nearest,distance=nil,math.huge
+    for _,coin in ipairs(CollectionService:GetTagged("ServerCoinPart")) do
+        if IsValidCandy(coin) and Addon.IsActiveCandy(coin) then
+            local untilTime=FailedTargets[coin]
+            local currentDistance=(root.Position-coin.Position).Magnitude
+            if (not untilTime or os.clock()>=untilTime) and currentDistance<=350 and currentDistance<distance then
+                nearest,distance=coin,currentDistance
             end
         end
     end
-
-    return Closest,
-        ClosestDistance
+    return nearest,distance
 end
 
-local function TweenSegment(
-    Root,
-    Position
-)
-
-    if not Root
-        or not Root.Parent then
-
-        return false
+local function MoveToCandy(coin)
+    local reached,reason=Movement.MoveToCandy(coin)
+    if not reached and reason~="Stopped" and reason~="CharacterLost" and coin and coin.Parent then
+        FailedTargets[coin]=os.clock()+Config.FailedTargetDelay
     end
-
-    local Distance =
-        (
-            Root.Position
-            - Position
-        ).Magnitude
-
-    if Distance <= 0.1 then
-        return true
-    end
-
-    local Duration =
-        Distance
-        / Config.TweenSpeed
-
-    Duration =
-        math.max(
-            Duration,
-            0.05
-        )
-
-    local Look =
-        Root.CFrame.LookVector
-
-    local FlatLook =
-        Vector3.new(
-            Look.X,
-            0,
-            Look.Z
-        )
-
-    if FlatLook.Magnitude
-        < 0.01 then
-
-        FlatLook =
-            Vector3.new(
-                0,
-                0,
-                -1
-            )
-    else
-
-        FlatLook =
-            FlatLook.Unit
-    end
-
-    local TargetCFrame =
-        CFrame.lookAt(
-            Position,
-            Position + FlatLook
-        )
-
-    Root.AssemblyLinearVelocity =
-        Vector3.zero
-
-    Root.AssemblyAngularVelocity =
-        Vector3.zero
-
-    local Tween =
-        TweenService:Create(
-            Root,
-
-            TweenInfo.new(
-                Duration,
-                Enum.EasingStyle.Linear,
-                Enum.EasingDirection.Out
-            ),
-
-            {
-                CFrame = TargetCFrame
-            }
-        )
-
-    CurrentTween =
-        Tween
-
-    Tween:Play()
-
-    local PlaybackState =
-        Tween.Completed:Wait()
-
-    if CurrentTween == Tween then
-        CurrentTween = nil
-    end
-
-    if PlaybackState
-        == Enum.PlaybackState.Cancelled then
-
-        return false
-    end
-
-    return true
-end
-
-local function SafeTweenTo(
-    Candy
-)
-
-    local _, _, Root =
-        GetCharacter()
-
-    if not Root then
-        return false
-    end
-
-    if not IsValidCandy(Candy) then
-        return false
-    end
-
-    IsMoving = true
-    CurrentTarget = Candy
-
-    while Config.AutoCandy
-        and not WaitingNextRound
-        and Candy
-        and Candy.Parent
-        and IsValidCandy(Candy) do
-
-        local _, _, CurrentRoot =
-            GetCharacter()
-
-        if not CurrentRoot then
-            break
-        end
-
-        Root =
-            CurrentRoot
-
-        local FinalPosition =
-            Candy.Position
-            + Vector3.new(
-                0,
-                Config.YOffset,
-                0
-            )
-
-        local Delta =
-            FinalPosition
-            - Root.Position
-
-        local Distance =
-            Delta.Magnitude
-
-        if Distance <= 2.2 then
-            break
-        end
-
-        local TargetPosition
-
-        if Config.SafeTween
-            and Distance
-                > Config.SegmentDistance then
-
-            TargetPosition =
-                Root.Position
-                + Delta.Unit
-                * Config.SegmentDistance
-
-        else
-
-            TargetPosition =
-                FinalPosition
-        end
-
-        local Success =
-            TweenSegment(
-                Root,
-                TargetPosition
-            )
-
-        if not Success then
-            break
-        end
-
-        if not Config.AutoCandy
-            or WaitingNextRound then
-
-            break
-        end
-
-        task.wait(
-            Config.SegmentDelay
-        )
-    end
-
-    if Config.AutoCandy
-        and not WaitingNextRound
-        and IsValidCandy(Candy) then
-
-        local _, _, Root2 =
-            GetCharacter()
-
-        if Root2 then
-
-            local Final =
-                Candy.Position
-                + Vector3.new(
-                    0,
-                    Config.YOffset,
-                    0
-                )
-
-            TweenSegment(
-                Root2,
-                Final
-            )
-
-            Root2.AssemblyLinearVelocity =
-                Vector3.zero
-
-            Root2.AssemblyAngularVelocity =
-                Vector3.zero
-        end
-    end
-
-    IsMoving = false
-    CurrentTarget = nil
-
-    return true
+    return reached
 end
 
 local function WaitForCollect(
@@ -1574,7 +1533,18 @@ local function ResetCharacterAfterFullBag()
 
 end
 
-local Addon=AttachKaitun({
+Movement=AttachCFrameMovement({
+    character=GetCharacter,
+    valid=function(coin) return Addon and Addon.IsActiveCandy(coin) end,
+    allowed=function() return Config.AutoCandy and not WaitingNextRound and Addon and Addon.CanFarm() end,
+    container=function() return Addon and Addon.CoinContainer() end,
+    speed=function() return Config.TweenSpeed end,
+    yOffset=Config.YOffset,
+    bag=function() return CurrentBag end,
+    moving=function(value,coin) IsMoving=value;CurrentTarget=coin end,
+    failure=function(message) if Addon then Addon.MovementError(message) end end,
+})
+Addon=AttachKaitun({
     env=Env,config=Config,cancel=CancelTween,validCandy=IsValidCandy,
     snapshot=function()
         return {bag=CurrentBag,maxBag=MaxBag,waiting=WaitingNextRound,moving=IsMoving}
@@ -1661,7 +1631,7 @@ task.spawn(function()
 
     while Gui.Parent do
 
-        task.wait(0.1)
+        task.wait(0.03)
 
         if not Addon.BeforeCycle() then continue end
 
@@ -1722,7 +1692,7 @@ task.spawn(function()
             Candy:GetFullName()
 
         local Reached =
-            SafeTweenTo(
+            MoveToCandy(
                 Candy
             )
 
@@ -1756,6 +1726,8 @@ task.spawn(function()
                     continue
                 end
 
+                local NextCandy=GetNearestCandy()
+                local PickupDelay=Movement.CollectDelay(Config.CollectDelay,NextCandy)
                 local DelayStart =
                     os.clock()
 
@@ -1764,9 +1736,9 @@ task.spawn(function()
                     and (
                         os.clock()
                         - DelayStart
-                    ) < Config.CollectDelay do
+                    ) < PickupDelay do
 
-                    task.wait(0.1)
+                    task.wait(0.03)
                 end
 
             else
