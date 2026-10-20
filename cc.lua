@@ -1041,10 +1041,23 @@ local Config = {
 }
 
 local Settings = Core.config(Env.ConfigKaitunMM2Hallowen2026,Env.ModeFarming,Env.Fpslock)
+local EffectiveFPS = math.max(1,tonumber(Settings.fps) or 60)
+local LowFPS = EffectiveFPS <= 10
+local FrameTime = 1 / EffectiveFPS
 Config.TweenSpeed=Settings.speed
 Config.CollectDelay=Settings.collectDelay
 Config.ResetDelay=Settings.resetDelay
-Config.SegmentDistance=math.min(Settings.segment,10)
+Config.SegmentDistance=LowFPS and math.clamp(Config.TweenSpeed / EffectiveFPS,18,36) or math.min(Settings.segment,10)
+Config.SegmentDelay=LowFPS and 0 or Config.SegmentDelay
+if LowFPS then
+    Config.FinalDistance=8
+    Config.FinalSpeed=math.min(Config.FinalSpeed,math.max(16,EffectiveFPS*4))
+    Config.FinalHold=math.max(Config.FinalHold,FrameTime*2)
+    Config.SweepDistance=0.55
+    Config.SweepSpeed=math.min(Config.SweepSpeed,10)
+    Config.StabilizerResponsiveness=50
+    Config.StabilizerTorqueMultiplier=6000
+end
 Env.MM2CandyConfig = Config
 
 local Remotes =
@@ -1553,15 +1566,30 @@ local function BuildTweenCFrame(
     Root,
     Position
 )
-    local Look =
-        Root.CFrame.LookVector
+    local Direction =
+        Position
+        - Root.Position
 
     local Flat =
         Vector3.new(
-            Look.X,
+            Direction.X,
             0,
-            Look.Z
+            Direction.Z
         )
+
+    if Flat.Magnitude
+        < 0.01 then
+
+        local Look =
+            Root.CFrame.LookVector
+
+        Flat =
+            Vector3.new(
+                Look.X,
+                0,
+                Look.Z
+            )
+    end
 
     if Flat.Magnitude
         < 0.01 then
@@ -1590,7 +1618,8 @@ local function TweenSegment(
     Position,
     Speed,
     Token,
-    Character
+    Character,
+    MinimumDuration
 )
     if not Root
         or not Root.Parent then
@@ -1623,11 +1652,17 @@ local function TweenSegment(
             1
         )
 
+    local DefaultMinimum =
+        LowFPS
+        and FrameTime * 0.9
+        or 0.05
+
     local Duration =
         math.max(
             Distance
             / MoveSpeed,
-            0.05
+            tonumber(MinimumDuration)
+            or DefaultMinimum
         )
 
     if Config.Stabilizer then
@@ -1708,11 +1743,6 @@ local function TweenSegment(
         return false
     end
 
-    if Config.Stabilizer then
-        RunService.Heartbeat:
-            Wait()
-    end
-
     return true
 end
 
@@ -1781,14 +1811,24 @@ local function TouchSweep(
     local D =
         Config.SweepDistance
 
-    local Points = {
-        Center,
-        Center + Right * D,
-        Center - Right * D,
-        Center + Forward * D,
-        Center - Forward * D,
-        Center
-    }
+    local Points
+
+    if LowFPS then
+        Points = {
+            Center + Right * D,
+            Center - Right * D,
+            Center
+        }
+    else
+        Points = {
+            Center,
+            Center + Right * D,
+            Center - Right * D,
+            Center + Forward * D,
+            Center - Forward * D,
+            Center
+        }
+    end
 
     for _, Position in ipairs(
         Points
@@ -1833,7 +1873,8 @@ local function TouchSweep(
                 Position,
                 Config.SweepSpeed,
                 Token,
-                Character
+                Character,
+                LowFPS and FrameTime * 0.85 or nil
             )
 
         if not Success then
@@ -1958,14 +1999,23 @@ local function SafeTweenTo(
 
         local TargetPosition
 
-        if Config.SafeTween
-            and Distance
-                > Config.SegmentDistance then
+        if Distance
+            > Config.FinalDistance then
+
+            local StepDistance =
+                math.min(
+                    Config.SegmentDistance,
+                    math.max(
+                        Distance
+                        - Config.FinalDistance,
+                        0.5
+                    )
+                )
 
             TargetPosition =
                 Root.Position
                 + Delta.Unit
-                * Config.SegmentDistance
+                * StepDistance
 
         else
 
@@ -1976,6 +2026,9 @@ local function SafeTweenTo(
         local MoveSpeed =
             Config.TweenSpeed
 
+        local MinimumDuration =
+            nil
+
         if Config.Stabilizer
             and Distance
                 <= Config.FinalDistance then
@@ -1985,6 +2038,11 @@ local function SafeTweenTo(
                     MoveSpeed,
                     Config.FinalSpeed
                 )
+
+            if LowFPS then
+                MinimumDuration =
+                    FrameTime * 2.25
+            end
         end
 
         Success =
@@ -1993,7 +2051,8 @@ local function SafeTweenTo(
                 TargetPosition,
                 MoveSpeed,
                 Token,
-                Character
+                Character,
+                MinimumDuration
             )
 
         if not Success then
@@ -2018,9 +2077,11 @@ local function SafeTweenTo(
             break
         end
 
-        task.wait(
-            Config.SegmentDelay
-        )
+        if Config.SegmentDelay > 0 then
+            task.wait(
+                Config.SegmentDelay
+            )
+        end
     end
 
     if Success
@@ -2066,8 +2127,36 @@ local function SafeTweenTo(
                     Final,
                     FinalSpeed,
                     Token,
+                    Character,
+                    LowFPS and FrameTime * 2.25 or nil
+                )
+
+            if Success
+                and LowFPS
+                and not MovementConfirmed(
+                    Candy,
+                    OldBag
+                ) then
+
+                local ConfirmUntil =
+                    os.clock()
+                    + FrameTime * 1.25
+
+                while MovementAllowed(
+                    Token,
                     Character
                 )
+                    and os.clock()
+                        < ConfirmUntil
+                    and not MovementConfirmed(
+                        Candy,
+                        OldBag
+                    ) do
+
+                    RunService.Heartbeat:
+                        Wait()
+                end
+            end
 
             if Success
                 and not MovementConfirmed(
