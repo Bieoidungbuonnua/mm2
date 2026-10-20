@@ -8,11 +8,15 @@ return function(context)
     local RunService=game:GetService("RunService")
     local generation=0
     local blockedConnection
-    local maxStep=3.5
+    local maxStep=2
     local nearDistance=7
+    local currentSpeed=0
+    local lastCommanded
 
     local function stop()
         generation=generation+1
+        currentSpeed=0
+        lastCommanded=nil
         if blockedConnection then blockedConnection:Disconnect();blockedConnection=nil end
         context.moving(false,nil)
     end
@@ -37,7 +41,13 @@ return function(context)
         return result
     end
     local function clearance(humanoid,root)
-        return math.clamp(humanoid.HipHeight+root.Size.Y/2,2,4.5)
+        local height=humanoid.HipHeight+root.Size.Y/2
+        if humanoid.RigType==Enum.HumanoidRigType.R6 then
+            local character=context.character()
+            local leg=character and (character:FindFirstChild("Left Leg") or character:FindFirstChild("Right Leg"))
+            height=height+(leg and leg.Size.Y or 2)
+        end
+        return math.clamp(height,2,5)
     end
     local function floor(position,rayParams)
         local hit=Workspace:Raycast(position+Vector3.new(0,5,0),Vector3.new(0,-18,0),rayParams)
@@ -57,7 +67,7 @@ return function(context)
     local function goal(coin,humanoid,root,rayParams)
         local hit=Workspace:Raycast(coin.Position+Vector3.new(0,0.5,0),Vector3.new(0,-18,0),rayParams)
         if not hit or hit.Normal.Y<0.35 then return nil end
-        return Vector3.new(coin.Position.X,math.max(coin.Position.Y+context.yOffset,hit.Position.Y+clearance(humanoid,root)),coin.Position.Z),hit.Position
+        return Vector3.new(coin.Position.X,hit.Position.Y+clearance(humanoid,root),coin.Position.Z),hit.Position
     end
     local function clearSegment(from,to,rayParams)
         if wall(from,to,rayParams) then return false end
@@ -71,25 +81,19 @@ return function(context)
     local function confirmed(coin,bag)
         return not coin.Parent or coin:GetAttribute("Collected")==true or context.bag()>bag
     end
-    local function apply(root,position,direction)
-        local flat=Vector3.new(direction.X,0,direction.Z)
-        if flat.Magnitude<0.01 then
-            local look=root.CFrame.LookVector
-            flat=Vector3.new(look.X,0,look.Z)
-        end
-        if flat.Magnitude<0.01 then flat=Vector3.new(0,0,-1) end
+    local function apply(root,position)
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
-        root.CFrame=CFrame.lookAt(position,position+flat.Unit)
-        root.AssemblyLinearVelocity=Vector3.zero
-        root.AssemblyAngularVelocity=Vector3.zero
+        root.CFrame=root.CFrame+(position-root.Position)
+        lastCommanded=position
     end
-    local function stepTo(target,coin,token,character,rayParams,bag,jump,isBlocked,final)
+    local function stepTo(target,coin,token,character,rayParams,bag,jump,isBlocked,final,endSpeed)
         local _,_,root=context.character()
         if not root then return false,"CharacterLost" end
         local start=root.Position
         local length=(target-start).Magnitude
         local progress=0
+        local nextShortcutCheck=0
         local deadline=os.clock()+math.max(3,length/math.max(context.speed(),1)*3+2)
         while allowed(token,character) do
             if confirmed(coin,bag) then return true,"Collected" end
@@ -98,11 +102,11 @@ return function(context)
             if os.clock()>deadline then return false,"MovementTimeout" end
             local _,humanoid,currentRoot=context.character()
             if currentRoot~=root then return false,"CharacterLost" end
-            local destination=final and goal(coin,humanoid,root,rayParams) or target
-            if not destination then return false,"UnsafeFloor" end
+            local destination=target
             local delta=destination-root.Position
-            if delta.Magnitude<=(final and 0.6 or 1) then return true,"Reached" end
-            if not final and (coin.Position-root.Position).Magnitude<=nearDistance then
+            if delta.Magnitude<=0.35 then return true,"Reached" end
+            if not final and not jump and os.clock()>=nextShortcutCheck then
+                nextShortcutCheck=os.clock()+0.25
                 local last=goal(coin,humanoid,root,rayParams)
                 if last and clearSegment(root.Position,last,rayParams) then return true,"FinalApproach" end
             end
@@ -112,12 +116,22 @@ return function(context)
             if confirmed(coin,bag) then return true,"Collected" end
             if not context.valid(coin) then return false,"TargetInactive" end
             if isBlocked and isBlocked() then return false,"Blocked" end
+            if lastCommanded and (root.Position-lastCommanded).Magnitude>5 then return false,"PositionCorrected" end
             if final then
                 destination=goal(coin,humanoid,root,rayParams)
                 if not destination then return false,"UnsafeFloor" end
+                target=destination
             end
-            local speed=final and math.min(context.speed(),32) or context.speed()
-            local step=math.min(math.max(dt,0)*speed,final and 0.75 or maxStep)
+
+            dt=math.clamp(dt,0,1/30)
+            local configuredSpeed=context.speed()
+            local acceleration=math.max(80,configuredSpeed*3)
+            local braking=math.max(100,configuredSpeed*3)
+            local arrivalSpeed=endSpeed or 0
+            local desiredSpeed=math.min(configuredSpeed,math.sqrt(arrivalSpeed*arrivalSpeed+2*braking*(destination-root.Position).Magnitude))
+            desiredSpeed=math.max(math.min(8,configuredSpeed),desiredSpeed)
+            currentSpeed=math.clamp(desiredSpeed,math.max(0,currentSpeed-acceleration*dt),currentSpeed+acceleration*dt)
+            local step=math.min(dt*currentSpeed,maxStep)
             if step<=0 then return false,"NoProgress" end
             if jump then
                 progress=math.min(1,progress+step/math.max(length,0.01))
@@ -132,9 +146,14 @@ return function(context)
             local rise=hit.Position.Y+clearance(humanoid,root)-nextPosition.Y
             if rise>1.5 then return false,"Blocked" end
             if rise>0 then nextPosition=nextPosition+Vector3.new(0,rise,0) end
-            if (nextPosition-root.Position).Magnitude>maxStep then return false,"StepTooHigh" end
+            local adjusted=nextPosition-root.Position
+            if adjusted.Magnitude>maxStep then
+                nextPosition=root.Position+adjusted.Unit*maxStep
+                local support=floor(nextPosition,rayParams)
+                if not support or nextPosition.Y<support.Position.Y+clearance(humanoid,root)-0.05 then return false,"Blocked" end
+            end
             if wall(root.Position,nextPosition,rayParams) then return false,"Blocked" end
-            apply(root,nextPosition,delta)
+            apply(root,nextPosition)
         end
         return false,"Stopped"
     end
@@ -153,7 +172,7 @@ return function(context)
             if not context.valid(coin) then return false,"TargetInactive" end
             local finish,ground=goal(coin,humanoid,root,rayParams)
             if not finish then return false,"UnsafeFloor" end
-            if (finish-root.Position).Magnitude<=nearDistance and clearSegment(root.Position,finish,rayParams) then
+            if clearSegment(root.Position,finish,rayParams) then
                 return stepTo(finish,coin,token,character,rayParams,bag,false,nil,true)
             end
             local path=Pathfinding:CreatePath({AgentRadius=2,AgentHeight=5,AgentCanJump=true,AgentCanClimb=true,WaypointSpacing=4})
@@ -171,17 +190,28 @@ return function(context)
                     if index>1 then
                         local target=point.Position+Vector3.new(0,clearance(humanoid,root),0)
                         local success
-                        success,reason=stepTo(target,coin,token,character,rayParams,bag,point.Action==Enum.PathWaypointAction.Jump,function() return blocked end,false)
+                        local cornerSpeed=0
+                        local following=points[index+1]
+                        if following then
+                            local incoming=target-root.Position
+                            local outgoing=following.Position-point.Position
+                            if incoming.Magnitude>0.01 and outgoing.Magnitude>0.01 then
+                                local a,b=incoming.Unit,outgoing.Unit
+                                local dot=a.X*b.X+a.Y*b.Y+a.Z*b.Z
+                                cornerSpeed=context.speed()*math.clamp((dot+1)/2,0.2,1)
+                            end
+                        end
+                        success,reason=stepTo(target,coin,token,character,rayParams,bag,point.Action==Enum.PathWaypointAction.Jump,function() return blocked end,false,cornerSpeed)
                         if not success or reason=="FinalApproach" or reason=="Collected" then break end
                     end
                 end
                 if blockedConnection then blockedConnection:Disconnect();blockedConnection=nil end
                 if reason=="Collected" then return true,reason end
-                if reason=="Stopped" or reason=="CharacterLost" or reason=="TargetInactive" then return false,reason end
+                if reason=="Stopped" or reason=="CharacterLost" or reason=="TargetInactive" or reason=="PositionCorrected" then return false,reason end
                 finish=goal(coin,humanoid,root,rayParams)
-                if finish and (finish-root.Position).Magnitude<=nearDistance and clearSegment(root.Position,finish,rayParams) then
+                if finish and clearSegment(root.Position,finish,rayParams) then
                     local reached,why=stepTo(finish,coin,token,character,rayParams,bag,false,nil,true)
-                    if reached or why=="Stopped" then return reached,why end
+                    if reached or why=="Stopped" or why=="PositionCorrected" then return reached,why end
                 end
             end
             task.wait(0.08)
@@ -478,10 +508,14 @@ return function()
     task.spawn(function()
         while active do
             optimizeLighting()
+            local sliceStarted=os.clock()
             for index,object in ipairs(Workspace:GetDescendants()) do
                 if not active then return end
                 optimize(object)
-                if index%750==0 then task.wait() end
+                if index%64==0 and os.clock()-sliceStarted>=0.002 then
+                    task.wait()
+                    sliceStarted=os.clock()
+                end
             end
             task.wait(2)
         end
