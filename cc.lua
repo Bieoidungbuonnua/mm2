@@ -25,7 +25,7 @@ function Core.config(raw, mode, fps)
         fpsBoost = raw["Fps Boots"] == true,
         mode = mode == 2 and 2 or 1,
         fps = math.floor(Core.number(fps, 60, 1, 2000)),
-        speed = Core.number(raw["Spead Tween"], 120, 1, 1000000),
+        speed = Core.number(raw["Spead"], 120, 1, 1000000),
         collectDelay = Core.number(raw["Delay Collect Candy"], 1, 0, 30),
         crateThreshold = math.floor(Core.number(crates["Candies When"], 1800, 1, 1000000000000)),
         openDelay = Core.number(crates["Delay Open"], 0.5, 0, 60),
@@ -107,6 +107,40 @@ function Core.itemName(id, info)
     return tostring(name)
 end
 
+function Core.itemStyle(info)
+    info = type(info) == "table" and info or {}
+    local styles = {
+        common = {rank=1, icon="⚪", color=9807270},
+        uncommon = {rank=2, icon="🟢", color=5763719},
+        rare = {rank=3, icon="🔵", color=3447003},
+        legendary = {rank=4, icon="🟣", color=10181046},
+        godly = {rank=5, icon="💎", color=16738740},
+        vintage = {rank=6, icon="🏛️", color=15844367},
+        classic = {rank=6, icon="🏛️", color=15844367},
+        ancient = {rank=7, icon="🔥", color=15105570},
+        unique = {rank=8, icon="🏆", color=16766720},
+    }
+    local style = styles[Core.normalize(info.Rarity or "")] or {rank=0, icon="📦", color=5037412}
+    if info.Chroma == true then
+        return {rank=math.max(style.rank,5), icon="🌈", color=style.color}
+    end
+    return style
+end
+
+function Core.itemDisplay(id, info)
+    info = type(info) == "table" and info or {}
+    local style = Core.itemStyle(info)
+    local kind = Core.normalize(info.ItemType or "")
+    local icon = kind == "knife" and "🗡️" or kind == "gun" and "🔫" or "📦"
+    local name = Core.itemName(id, info):gsub("([\\`*_~|>])", "\\%1")
+    if style.rank >= 3 then
+        local rarity = tostring(info.Rarity or "Chroma")
+        if info.Chroma == true then rarity = "Chroma · " .. rarity end
+        return style.icon .. " " .. icon .. " **" .. name .. "** · " .. rarity
+    end
+    return icon .. " " .. name
+end
+
 function Core.itemLines(owned, database, wanted)
     local lines = {}
     local names = {}
@@ -116,13 +150,18 @@ function Core.itemLines(owned, database, wanted)
         if type(amount) == "number" and amount > 0 and info then
             local name = Core.itemName(id, info)
             if names[Core.normalize(name)] or names[Core.normalize(id)] then
-                local suffix = info.ItemType and " [" .. info.ItemType .. "]" or ""
-                lines[#lines + 1] = name .. suffix .. " x" .. math.floor(amount)
+                lines[#lines + 1] = {rank=Core.itemStyle(info).rank, name=name,
+                    text=Core.itemDisplay(id,info).." ×"..math.floor(amount)}
             end
         end
     end
-    table.sort(lines)
-    return #lines > 0 and table.concat(lines, "\n") or "None"
+    table.sort(lines,function(a,b) if a.rank~=b.rank then return a.rank>b.rank end;return a.name<b.name end)
+    local output, length = {}, 0
+    for _, entry in ipairs(lines) do
+        if length + #entry.text + 1 > 990 then output[#output+1]="…";break end
+        output[#output+1]=entry.text;length=length+#entry.text+1
+    end
+    return #output > 0 and table.concat(output, "\n") or "None"
 end
 
 function Core.battleNotice(filters, event)
@@ -141,7 +180,7 @@ function Core.duration(seconds)
     return string.format("%02d:%02d:%02d", math.floor(seconds / 3600), math.floor(seconds / 60) % 60, seconds % 60)
 end
 
-function Core.webhook(metrics, title, description, hook)
+function Core.webhook(metrics, title, description, hook, itemInfo)
     local ping = hook.ping and hook.discordID:match("^%d+$") ~= nil
     local function field(name, value, inline)
         return {name = name, value = tostring(value):sub(1, 1024), inline = inline == true}
@@ -151,14 +190,14 @@ function Core.webhook(metrics, title, description, hook)
         content = ping and "<@" .. hook.discordID .. ">" or "",
         allowed_mentions = {parse = {}, users = ping and {hook.discordID} or {}},
         embeds = {{
-            title = tostring(title):sub(1, 256), description = tostring(description):sub(1, 1024),
-            color = 5037412, url = "https://mtrchill.click",
+            title = ("🎃 " .. tostring(title)):sub(1, 256), description = tostring(description):sub(1, 1024),
+            color = itemInfo and Core.itemStyle(itemInfo).color or 5037412, url = "https://mtrchill.click",
             fields = {
-                field("User", metrics.user, true), field("Candies", metrics.candies, true),
-                field("Candies This Round", metrics.bag, true), field("Battle Pass Tier", metrics.tier, true),
-                field("Map", metrics.map, true), field("Role", metrics.role, true),
-                field("Round Time", metrics.roundTime, true), field("Elapsed", metrics.elapsed, true),
-                field("Items This Account", metrics.items, false),
+                field("👤 User", metrics.user, true), field("🍬 Candies", metrics.candies, true),
+                field("🎯 Candies This Round", metrics.bag, true), field("🏅 Battle Pass Tier", metrics.tier, true),
+                field("🗺️ Map", metrics.map, true), field("🎭 Role", metrics.role, true),
+                field("⏳ Round Time", metrics.roundTime, true), field("⏱️ Elapsed", metrics.elapsed, true),
+                field("🎒 Items This Account", metrics.items, false),
             },
             footer = {text = "mtrchill.click | Skider MM2 Kaitun"},
         }},
@@ -426,14 +465,14 @@ local function validWebhook(url)
     return url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+") or url:match("^https://discord%.com/api/v%d+/webhooks/%d+/[%w_%-]+")
         or url:match("^https://discordapp%.com/api/webhooks/%d+/[%w_%-]+")
 end
-Notify=function(event,description,battle)
+Notify=function(event,description,battle,itemInfo)
     log(event,{message=description,balance=balance(),tier=passData().CurrentTier})
     if blockedByVerification() then return end
     if Validation.NoWebhook or not Config.webhook.enabled or Config.webhook.url=="" then return end
     if battle and not Core.battleNotice(Config.battleNotices,event) then return end
     if not validWebhook(Config.webhook.url) then S.webhookStatus="Invalid URL";return end
     if #S.webhookQueue>=40 then S.webhookStatus="Queue full";return end
-    S.webhookQueue[#S.webhookQueue+1]=Core.webhook(metrics(),event,description,Config.webhook)
+    S.webhookQueue[#S.webhookQueue+1]=Core.webhook(metrics(),event,description,Config.webhook,itemInfo)
 end
 local function applyProfile(data)
     if type(data)~="table" or type(data.Materials)~="table" or type(data[Event.Title])~="table" then return false end
@@ -491,7 +530,7 @@ local function claimUnlocked()
         if not confirmed then S.notice="Tier "..key.." claim not confirmed; no automatic retry";Notify("Claim pending",S.notice,true);return false end
         if (passData().ClaimedRewards or {})[key]==true then S.claimPending[key]=nil end
         S.receipts=S.receipts+1
-        Notify("Reward claimed","Tier "..key.." | "..Core.itemName(reward.ItemID,Sync.Weapons[reward.ItemID]),true);task.wait(0.25)
+        Notify("Reward claimed","Tier "..key.." | "..Core.itemDisplay(reward.ItemID,Sync.Weapons[reward.ItemID]),true,Sync.Weapons[reward.ItemID]);task.wait(0.25)
         if S.claimPending[key] then return false end
     end
     return true
@@ -511,7 +550,7 @@ local function purchaseBatch()
             local expected=Core.ownedCount(before,item)+1
             if not waitConfirm(function(p) return Core.ownedCount(p.owned.Weapons,item)>=expected end) then uncertain("Crate inventory not confirmed");break end
             if S.running then fire(Shop:WaitForChild("CrateComplete"),item) end
-            S.receipts=S.receipts+1;Notify("Crate opened",Core.itemName(item,Sync.Weapons[item]).." | "..CrateID)
+            S.receipts=S.receipts+1;Notify("Crate opened",Core.itemDisplay(item,Sync.Weapons[item]).." | "..CrateID,false,Sync.Weapons[item])
             local deadline=os.clock()+Config.openDelay
             while S.running and not S.paused and os.clock()<deadline do task.wait(0.05) end
         end
@@ -538,7 +577,7 @@ local function purchaseBatch()
                 local confirmed=sent and waitConfirm(function(p)
                     return (tonumber(p.event.FinalRewardClaimAmount) or 0)>old or Core.ownedCount(p.owned[BP.FinalRewardType],BP.FinalReward)>before
                 end)
-                if confirmed then S.receipts=S.receipts+1;Notify("Final reward claimed",Core.itemName(BP.FinalReward,Sync.Weapons[BP.FinalReward]),true)
+                if confirmed then S.receipts=S.receipts+1;Notify("Final reward claimed",Core.itemDisplay(BP.FinalReward,Sync.Weapons[BP.FinalReward]),true,Sync.Weapons[BP.FinalReward])
                 else uncertain("Final reward not confirmed") end
             end
         end
@@ -574,17 +613,17 @@ local function buildCompactUI()
             TextYAlignment=Enum.TextYAlignment.Center,BackgroundTransparency=1,TextTruncate=Enum.TextTruncate.AtEnd},main)
     end
     label("Title","Skider MM2 Kaitun",18,27,310,32,23,green)
-    label("UserCaption","USER",19,98,80,18,11,Color3.fromRGB(143,169,148))
+    label("UserCaption","👤 USER",19,98,100,18,11,Color3.fromRGB(143,169,148))
     label("User",Player.Name,19,117,320,27,17)
-    label("Mode","Mode: "..(Config.mode==1 and "Crates" or "Battlepass"),19,146,320,20,13,green)
-    label("CandyCaption","CANDIES",19,181,150,18,11,Color3.fromRGB(143,169,148))
+    label("Mode",(Config.mode==1 and "📦 Mode: Crates" or "🏅 Mode: Battlepass"),19,146,320,20,13,green)
+    label("CandyCaption","🍬 CANDIES",19,181,150,18,11,Color3.fromRGB(143,169,148))
     local candies=label("Candies","Loading",19,201,150,28,23,green)
-    label("BagCaption","THIS ROUND",196,181,145,18,11,Color3.fromRGB(143,169,148))
+    label("BagCaption","🎯 THIS ROUND",196,181,145,18,11,Color3.fromRGB(143,169,148))
     local bag=label("Bag","0/50",196,201,145,28,23)
-    local state=label("Status","Status Farming : Starting",19,240,322,38,13,green)
+    local state=label("Status","⚡ Status Farming : Starting",19,240,322,38,13,green)
     state.TextWrapped=true;state.TextTruncate=Enum.TextTruncate.None
     local info=label("Round","Lobby | Spectator | Tier 0",19,280,322,20,11,Color3.fromRGB(163,184,168))
-    local elapsed=label("Elapsed","Total time elapsed : 00:00:00",19,304,265,20,12)
+    local elapsed=label("Elapsed","⏱️ Elapsed : 00:00:00",19,304,265,20,12)
     label("Brand","mtrchill.click",19,339,220,19,13,green)
     local pause=make("TextButton",{Text="PAUSE",Position=UDim2.fromOffset(272,333),Size=UDim2.fromOffset(69,26),Font=Enum.Font.FredokaOne,
         TextSize=11,TextColor3=green,BackgroundColor3=Color3.fromRGB(24,39,27),BorderSizePixel=0},main)
@@ -609,9 +648,9 @@ local function buildCompactUI()
     end)
     local bindings={
         SetCandies=function(total,thisRound) candies.Text=tostring(total);bag.Text=tostring(thisRound) end,
-        SetStatus=function(text) state.Text="Status Farming : "..tostring(text) end,
-        SetInfo=function(map,role,tier) info.Text=tostring(map).." | "..tostring(role).." | Tier "..tostring(tier) end,
-        SetElapsed=function(time,roundTime) elapsed.Text="Total time elapsed : "..tostring(time);info.Text=info.Text.." | "..tostring(roundTime) end,
+        SetStatus=function(text) state.Text="⚡ Status Farming : "..tostring(text) end,
+        SetInfo=function(map,role,tier) info.Text="🗺️ "..tostring(map).." | "..tostring(role).." | 🏅 "..tostring(tier) end,
+        SetElapsed=function(time,roundTime) elapsed.Text="⏱️ Elapsed : "..tostring(time);info.Text=info.Text.." | "..tostring(roundTime) end,
     }
     API.UI=bindings
     return screen,bindings
