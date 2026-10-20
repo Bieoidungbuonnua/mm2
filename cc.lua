@@ -1047,16 +1047,16 @@ local FrameTime = 1 / EffectiveFPS
 Config.TweenSpeed=Settings.speed
 Config.CollectDelay=Settings.collectDelay
 Config.ResetDelay=Settings.resetDelay
-Config.SegmentDistance=LowFPS and math.clamp((Config.TweenSpeed / EffectiveFPS) * 0.9,20,36) or math.min(Settings.segment,12)
+Config.SegmentDistance=LowFPS and math.clamp(Config.TweenSpeed / EffectiveFPS,18,36) or math.min(Settings.segment,10)
 Config.SegmentDelay=LowFPS and 0 or Config.SegmentDelay
 if LowFPS then
-    Config.FinalDistance=9
-    Config.FinalSpeed=math.min(Config.TweenSpeed,38)
-    Config.FinalHold=math.max(Config.FinalHold,FrameTime*0.9)
-    Config.SweepDistance=0.62
-    Config.SweepSpeed=math.min(Config.SweepSpeed,18)
-    Config.StabilizerResponsiveness=55
-    Config.StabilizerTorqueMultiplier=6500
+    Config.FinalDistance=8
+    Config.FinalSpeed=math.min(Config.FinalSpeed,math.max(16,EffectiveFPS*4))
+    Config.FinalHold=math.max(Config.FinalHold,FrameTime*2)
+    Config.SweepDistance=0.55
+    Config.SweepSpeed=math.min(Config.SweepSpeed,10)
+    Config.StabilizerResponsiveness=50
+    Config.StabilizerTorqueMultiplier=6000
 end
 Env.MM2CandyConfig = Config
 
@@ -1081,8 +1081,6 @@ local MaxBag = 50
 
 local IsMoving = false
 local CurrentTween = nil
-local CurrentDriver = nil
-local CurrentHybridConnection = nil
 local CurrentTarget = nil
 local MoveGeneration = 0
 local StabilizerData = nil
@@ -1439,26 +1437,6 @@ local function CancelTween()
             nil
     end
 
-    if CurrentHybridConnection then
-        pcall(function()
-            CurrentHybridConnection:
-                Disconnect()
-        end)
-
-        CurrentHybridConnection =
-            nil
-    end
-
-    if CurrentDriver then
-        pcall(function()
-            CurrentDriver:
-                Destroy()
-        end)
-
-        CurrentDriver =
-            nil
-    end
-
     CleanupStabilizer()
 
     IsMoving =
@@ -1663,7 +1641,7 @@ local function TweenSegment(
             - Position
         ).Magnitude
 
-    if Distance <= 0.08 then
+    if Distance <= 0.1 then
         return true
     end
 
@@ -1674,15 +1652,10 @@ local function TweenSegment(
             1
         )
 
-    local NearMode =
-        MinimumDuration ~= nil
-        or MoveSpeed
-            <= Config.FinalSpeed + 0.01
-
     local DefaultMinimum =
         LowFPS
-        and FrameTime * 0.72
-        or 0.035
+        and FrameTime * 0.9
+        or 0.05
 
     local Duration =
         math.max(
@@ -1692,162 +1665,56 @@ local function TweenSegment(
             or DefaultMinimum
         )
 
-    StartStabilizer(
-        Root,
-        Position
-    )
-
-    if StabilizerData
-        and StabilizerData.Align then
-
-        StabilizerData.Align.CFrame =
-            BuildOrientation(
-                Root,
-                Position
-            )
-    end
-
-    if CurrentHybridConnection then
-        pcall(function()
-            CurrentHybridConnection:
-                Disconnect()
-        end)
-
-        CurrentHybridConnection =
-            nil
-    end
-
-    if CurrentDriver then
-        pcall(function()
-            CurrentDriver:
-                Destroy()
-        end)
-
-        CurrentDriver =
-            nil
-    end
-
-    local StartCFrame =
-        Root.CFrame
-
-    local TargetCFrame =
-        BuildTweenCFrame(
+    if Config.Stabilizer then
+        StartStabilizer(
             Root,
             Position
         )
 
-    local Driver =
-        Instance.new(
-            "NumberValue"
-        )
+        if StabilizerData
+            and StabilizerData.Align then
 
-    Driver.Name =
-        "MM2HybridTweenAlpha"
+            StabilizerData.Align.CFrame =
+                BuildOrientation(
+                    Root,
+                    Position
+                )
+        end
 
-    Driver.Value = 0
-    Driver.Parent = Root
+        Root.AssemblyAngularVelocity =
+            Vector3.zero
 
-    CurrentDriver =
-        Driver
+    else
+
+        CleanupStabilizer()
+
+        Root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        Root.AssemblyAngularVelocity =
+            Vector3.zero
+    end
 
     local Tween =
         TweenService:
         Create(
-            Driver,
+            Root,
             TweenInfo.new(
                 Duration,
                 Enum.EasingStyle.Linear,
                 Enum.EasingDirection.Out
             ),
             {
-                Value = 1
+                CFrame =
+                    BuildTweenCFrame(
+                        Root,
+                        Position
+                    )
             }
         )
 
     CurrentTween =
         Tween
-
-    local Cancelled =
-        false
-
-    local Connection
-
-    Connection =
-        RunService.Heartbeat:
-        Connect(function()
-            if Token ~= MoveGeneration
-                or not Driver.Parent
-                or not Root.Parent then
-
-                Cancelled =
-                    true
-
-                pcall(function()
-                    Tween:Cancel()
-                end)
-
-                return
-            end
-
-            if not MovementAllowed(
-                Token,
-                Character
-            ) then
-
-                Cancelled =
-                    true
-
-                pcall(function()
-                    Tween:Cancel()
-                end)
-
-                return
-            end
-
-            local CurrentCharacter,
-                Humanoid,
-                CurrentRoot =
-                GetCharacter()
-
-            if CurrentCharacter ~= Character
-                or CurrentRoot ~= Root
-                or not Humanoid then
-
-                Cancelled =
-                    true
-
-                pcall(function()
-                    Tween:Cancel()
-                end)
-
-                return
-            end
-
-            local Alpha =
-                math.clamp(
-                    Driver.Value,
-                    0,
-                    1
-                )
-
-            Root.CFrame =
-                StartCFrame:
-                Lerp(
-                    TargetCFrame,
-                    Alpha
-                )
-
-            Root.AssemblyAngularVelocity =
-                Vector3.zero
-
-            if not NearMode then
-                Root.AssemblyLinearVelocity =
-                    Vector3.zero
-            end
-        end)
-
-    CurrentHybridConnection =
-        Connection
 
     Tween:Play()
 
@@ -1855,136 +1722,25 @@ local function TweenSegment(
         Tween.Completed:
         Wait()
 
-    if CurrentTween == Tween then
+    if CurrentTween
+        == Tween then
+
         CurrentTween =
             nil
     end
 
-    if CurrentHybridConnection == Connection then
-        CurrentHybridConnection =
-            nil
-    end
-
-    pcall(function()
-        Connection:Disconnect()
-    end)
-
-    if CurrentDriver == Driver then
-        CurrentDriver =
-            nil
-    end
-
-    pcall(function()
-        Driver:Destroy()
-    end)
-
-    if Cancelled
-        or PlaybackState
-            == Enum.PlaybackState.Cancelled
-        or Token ~= MoveGeneration
-        or not MovementAllowed(
-            Token,
-            Character
-        ) then
+    if PlaybackState
+        == Enum.PlaybackState.Cancelled then
 
         return false
     end
 
-    if Root
-        and Root.Parent then
-
-        Root.CFrame =
-            TargetCFrame
-
-        Root.AssemblyAngularVelocity =
-            Vector3.zero
-
-        if not NearMode then
-            Root.AssemblyLinearVelocity =
-                Vector3.zero
-        end
-    end
-
-    return true
-end
-
-local function CFramePulse(
-    Root,
-    Position,
-    Token,
-    Character,
-    HoldTime
-)
-    if not Root
-        or not Root.Parent
-        or not MovementAllowed(
-            Token,
-            Character
-        ) then
+    if not MovementAllowed(
+        Token,
+        Character
+    ) then
 
         return false
-    end
-
-    StartStabilizer(
-        Root,
-        Position
-    )
-
-    if StabilizerData
-        and StabilizerData.Align then
-
-        StabilizerData.Align.CFrame =
-            BuildOrientation(
-                Root,
-                Position
-            )
-    end
-
-    local TargetCFrame =
-        BuildTweenCFrame(
-            Root,
-            Position
-        )
-
-    Root.CFrame =
-        TargetCFrame
-
-    Root.AssemblyAngularVelocity =
-        Vector3.zero
-
-    local Hold =
-        tonumber(HoldTime)
-        or 0
-
-    if Hold > 0 then
-        local EndTime =
-            os.clock()
-            + Hold
-
-        repeat
-            if not MovementAllowed(
-                Token,
-                Character
-            ) then
-
-                return false
-            end
-
-            RunService.Heartbeat:
-                Wait()
-
-            if Root
-                and Root.Parent then
-
-                Root.CFrame =
-                    TargetCFrame
-
-                Root.AssemblyAngularVelocity =
-                    Vector3.zero
-            end
-
-        until os.clock()
-            >= EndTime
     end
 
     return true
@@ -2005,14 +1761,10 @@ local function TouchSweep(
         return true
     end
 
-    local CurrentCharacter,
-        _,
-        Root =
+    local _, _, Root =
         GetCharacter()
 
-    if CurrentCharacter ~= Character
-        or not Root then
-
+    if not Root then
         return false
     end
 
@@ -2027,6 +1779,9 @@ local function TouchSweep(
     local Right =
         Root.CFrame.RightVector
 
+    local Forward =
+        Root.CFrame.LookVector
+
     Right =
         Vector3.new(
             Right.X,
@@ -2034,37 +1789,58 @@ local function TouchSweep(
             Right.Z
         )
 
-    if Right.Magnitude > 0.01 then
+    Forward =
+        Vector3.new(
+            Forward.X,
+            0,
+            Forward.Z
+        )
+
+    if Right.Magnitude > 0 then
         Right = Right.Unit
     else
         Right = Vector3.xAxis
     end
 
+    if Forward.Magnitude > 0 then
+        Forward = Forward.Unit
+    else
+        Forward = Vector3.zAxis
+    end
+
     local D =
         Config.SweepDistance
 
-    local Points =
-        LowFPS
-        and {
+    local Points
+
+    if LowFPS then
+        Points = {
             Center + Right * D,
             Center - Right * D,
             Center
         }
-        or {
+    else
+        Points = {
             Center,
             Center + Right * D,
             Center - Right * D,
+            Center + Forward * D,
+            Center - Forward * D,
             Center
         }
-
-    local Hold =
-        LowFPS
-        and FrameTime * 0.82
-        or 0.035
+    end
 
     for _, Position in ipairs(
         Points
     ) do
+        if not MovementAllowed(
+            Token,
+            Character
+        ) then
+
+            return false
+        end
+
         if MovementConfirmed(
             Candy,
             OldBag
@@ -2080,26 +1856,53 @@ local function TouchSweep(
             return true
         end
 
-        CurrentCharacter,
-        _,
-        Root =
+        local CurrentCharacter,
+            _,
+            CurrentRoot =
             GetCharacter()
 
         if CurrentCharacter ~= Character
-            or not Root then
+            or not CurrentRoot then
 
             return false
         end
 
-        if not CFramePulse(
-            Root,
-            Position,
-            Token,
-            Character,
-            Hold
-        ) then
+        local Success =
+            TweenSegment(
+                CurrentRoot,
+                Position,
+                Config.SweepSpeed,
+                Token,
+                Character,
+                LowFPS and FrameTime * 0.85 or nil
+            )
 
+        if not Success then
             return false
+        end
+    end
+
+    if Config.FinalHold > 0 then
+        local Start =
+            os.clock()
+
+        while MovementAllowed(
+            Token,
+            Character
+        )
+            and os.clock()
+                - Start
+                < Config.FinalHold do
+
+            if MovementConfirmed(
+                Candy,
+                OldBag
+            ) then
+
+                return true
+            end
+
+            task.wait(0.03)
         end
     end
 
@@ -2190,13 +1993,11 @@ local function SafeTweenTo(
         local Distance =
             Delta.Magnitude
 
-        if Distance <= 2.25 then
+        if Distance <= 2.2 then
             break
         end
 
         local TargetPosition
-        local MoveSpeed
-        local MinimumDuration
 
         if Distance
             > Config.FinalDistance then
@@ -2216,29 +2017,32 @@ local function SafeTweenTo(
                 + Delta.Unit
                 * StepDistance
 
-            MoveSpeed =
-                Config.TweenSpeed
-
-            MinimumDuration =
-                LowFPS
-                and FrameTime * 0.72
-                or nil
-
         else
 
             TargetPosition =
                 FinalPosition
+        end
+
+        local MoveSpeed =
+            Config.TweenSpeed
+
+        local MinimumDuration =
+            nil
+
+        if Config.Stabilizer
+            and Distance
+                <= Config.FinalDistance then
 
             MoveSpeed =
                 math.min(
-                    Config.TweenSpeed,
+                    MoveSpeed,
                     Config.FinalSpeed
                 )
 
-            MinimumDuration =
-                LowFPS
-                and FrameTime * 2.15
-                or 0.12
+            if LowFPS then
+                MinimumDuration =
+                    FrameTime * 2.25
+            end
         end
 
         Success =
@@ -2259,6 +2063,16 @@ local function SafeTweenTo(
             Candy,
             OldBag
         ) then
+            break
+        end
+
+        if not MovementAllowed(
+            Token,
+            Character
+        ) then
+
+            Success =
+                false
 
             break
         end
@@ -2291,7 +2105,7 @@ local function SafeTweenTo(
         if CurrentCharacter == Character
             and Root2 then
 
-            local Center =
+            local Final =
                 Candy.Position
                 + Vector3.new(
                     0,
@@ -2299,53 +2113,48 @@ local function SafeTweenTo(
                     0
                 )
 
-            local Distance =
-                (
-                    Root2.Position
-                    - Center
-                ).Magnitude
+            local FinalSpeed =
+                Config.Stabilizer
+                and math.min(
+                    Config.TweenSpeed,
+                    Config.FinalSpeed
+                )
+                or Config.TweenSpeed
 
-            if Distance > 0.15 then
-                Success =
-                    TweenSegment(
-                        Root2,
-                        Center,
-                        math.min(
-                            Config.TweenSpeed,
-                            Config.FinalSpeed
-                        ),
-                        Token,
-                        Character,
-                        LowFPS
-                        and FrameTime * 2.15
-                        or 0.12
-                    )
-            end
+            Success =
+                TweenSegment(
+                    Root2,
+                    Final,
+                    FinalSpeed,
+                    Token,
+                    Character,
+                    LowFPS and FrameTime * 2.25 or nil
+                )
 
             if Success
+                and LowFPS
                 and not MovementConfirmed(
                     Candy,
                     OldBag
                 ) then
 
-                CurrentCharacter,
-                _,
-                Root2 =
-                    GetCharacter()
+                local ConfirmUntil =
+                    os.clock()
+                    + FrameTime * 1.25
 
-                if CurrentCharacter == Character
-                    and Root2 then
+                while MovementAllowed(
+                    Token,
+                    Character
+                )
+                    and os.clock()
+                        < ConfirmUntil
+                    and not MovementConfirmed(
+                        Candy,
+                        OldBag
+                    ) do
 
-                    Success =
-                        CFramePulse(
-                            Root2,
-                            Center,
-                            Token,
-                            Character,
-                            LowFPS
-                            and FrameTime * 0.9
-                            or 0.045
-                        )
+                    RunService.Heartbeat:
+                        Wait()
                 end
             end
 
@@ -2353,7 +2162,8 @@ local function SafeTweenTo(
                 and not MovementConfirmed(
                     Candy,
                     OldBag
-                ) then
+                )
+                and Config.Stabilizer then
 
                 Success =
                     TouchSweep(
@@ -2374,26 +2184,6 @@ local function SafeTweenTo(
             end)
 
             CurrentTween =
-                nil
-        end
-
-        if CurrentHybridConnection then
-            pcall(function()
-                CurrentHybridConnection:
-                    Disconnect()
-            end)
-
-            CurrentHybridConnection =
-                nil
-        end
-
-        if CurrentDriver then
-            pcall(function()
-                CurrentDriver:
-                    Destroy()
-            end)
-
-            CurrentDriver =
                 nil
         end
 
