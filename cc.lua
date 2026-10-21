@@ -970,7 +970,6 @@ pcall(function()
     if old then old:Destroy() end
 end)
 if typeof(setfpscap)=="function" then pcall(setfpscap,Config.fps) end
--- Anti AFK (lay tu bnn.lua: Player.Idled -> VirtualUser Button2). Dung connect() nen Stop() se tu ngat.
 do
     local okVU,VirtualUser=pcall(game.GetService,game,"VirtualUser")
     if okVU and VirtualUser then
@@ -1350,7 +1349,6 @@ local function ReleaseGravityLock()
     end
 end
 
--- Khoa trong luc khi tween (lay tu bnn.lua: BodyVelocity "eltrul", chi khoa truc Y)
 local function ApplyGravityLock(Root)
     if not Config.GravityLock
         or not Root
