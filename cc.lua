@@ -970,6 +970,19 @@ pcall(function()
     if old then old:Destroy() end
 end)
 if typeof(setfpscap)=="function" then pcall(setfpscap,Config.fps) end
+-- Anti AFK (lay tu bnn.lua: Player.Idled -> VirtualUser Button2). Dung connect() nen Stop() se tu ngat.
+do
+    local okVU,VirtualUser=pcall(game.GetService,game,"VirtualUser")
+    if okVU and VirtualUser then
+        connect(Player.Idled,function()
+            local camera=workspace.CurrentCamera
+            local cf=camera and camera.CFrame or CFrame.new()
+            pcall(VirtualUser.Button2Down,VirtualUser,Vector2.new(0,0),cf)
+            task.wait(1)
+            pcall(VirtualUser.Button2Up,VirtualUser,Vector2.new(0,0),cf)
+        end)
+    end
+end
 Ui,Labels=buildUI()
 
 applyProfile(LoadModule(BootChild(BootChild(RS,"Modules"),"ProfileData")))
