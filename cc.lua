@@ -970,6 +970,7 @@ pcall(function()
     if old then old:Destroy() end
 end)
 if typeof(setfpscap)=="function" then pcall(setfpscap,Config.fps) end
+-- Anti AFK (lay tu bnn.lua: Player.Idled -> VirtualUser Button2). Dung connect() nen Stop() se tu ngat.
 do
     local okVU,VirtualUser=pcall(game.GetService,game,"VirtualUser")
     if okVU and VirtualUser then
@@ -1220,6 +1221,7 @@ local Config = {
     SweepSpeed = 14,
     StabilizerResponsiveness = 35,
     StabilizerTorqueMultiplier = 4500,
+    GravityLock = true,
 }
 
 local Settings = Core.config(Env.ConfigKaitunMM2Hallowen2026,Env.ModeFarming,Env.Fpslock)
@@ -1332,6 +1334,76 @@ local function MovementAllowed(
     end
 
     return true
+end
+
+local GravityLock = nil
+local GravityRoot = nil
+
+local function ReleaseGravityLock()
+    local Lock = GravityLock
+    GravityLock = nil
+    GravityRoot = nil
+    if Lock then
+        pcall(function()
+            Lock:Destroy()
+        end)
+    end
+end
+
+-- Khoa trong luc khi tween (lay tu bnn.lua: BodyVelocity "eltrul", chi khoa truc Y)
+local function ApplyGravityLock(Root)
+    if not Config.GravityLock
+        or not Root
+        or not Root.Parent then
+
+        return
+    end
+
+    if GravityLock
+        and GravityLock.Parent
+        and GravityRoot == Root then
+
+        return
+    end
+
+    ReleaseGravityLock()
+
+    local Holder =
+        Root.Parent:FindFirstChild("Head")
+        or Root
+
+    local Lock =
+        Instance.new(
+            "BodyVelocity"
+        )
+
+    Lock.Name =
+        "MM2GravityLock"
+
+    Lock.MaxForce =
+        Vector3.new(
+            0,
+            math.huge,
+            0
+        )
+
+    Lock.Velocity =
+        Vector3.zero
+
+    Lock.P =
+        10000
+
+    Lock.Parent =
+        Holder
+
+    GravityLock =
+        Lock
+
+    GravityRoot =
+        Root
+
+    Root.AssemblyLinearVelocity =
+        Vector3.zero
 end
 
 local function CleanupStabilizer()
@@ -1609,6 +1681,7 @@ local function CancelTween()
     end
 
     CleanupStabilizer()
+    ReleaseGravityLock()
 
     IsMoving =
         false
@@ -1872,6 +1945,8 @@ local function TweenSegment(
         Root.AssemblyAngularVelocity =
             Vector3.zero
     end
+
+    ApplyGravityLock(Root)
 
     local Tween =
         TweenService:
@@ -2366,6 +2441,7 @@ local function SafeTweenTo(
         end
 
         CleanupStabilizer()
+        ReleaseGravityLock()
 
         IsMoving =
             false
