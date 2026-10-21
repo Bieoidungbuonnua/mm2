@@ -1,5 +1,32 @@
 local supplied = ...
 local Env = type(supplied) == "table" and supplied or getgenv()
+local Boot = {}
+Env.SkiderMM2Boot = Boot
+local function AwaitBoot(read, name)
+    local deadline = os.clock() + 120
+    repeat
+        if Env.SkiderMM2Boot ~= Boot then error("[Skider MM2] Startup superseded", 0) end
+        local value = read()
+        if value then return value end
+        if os.clock() >= deadline then error("[Skider MM2] Startup timeout: " .. name, 0) end
+        task.wait(0.1)
+    until false
+end
+local function BootChild(parent, name)
+    return AwaitBoot(function() return parent:FindFirstChild(name) end, name)
+end
+local function WaitGameReady()
+    AwaitBoot(function() return game:IsLoaded() end,"game loaded")
+    local players=game:GetService("Players")
+    local player=AwaitBoot(function() return players.LocalPlayer end,"LocalPlayer")
+    local gui=BootChild(player,"PlayerGui")
+    BootChild(gui,"MainGUI")
+    AwaitBoot(function()
+        local character=player.Character
+        return character and character:FindFirstChildOfClass("Humanoid")
+            and character:FindFirstChild("HumanoidRootPart") and workspace.CurrentCamera
+    end,"character and camera ready")
+end
 local Core = (function()
 local Core = {}
 
@@ -25,7 +52,7 @@ function Core.config(raw, mode, fps)
         fpsBoost = raw["Fps Boots"] == true,
         mode = mode == 2 and 2 or 1,
         fps = math.floor(Core.number(fps, 60, 1, 2000)),
-        speed = Core.number(raw["Spead Tween"], 120, 1, 1000000),
+        speed = Core.number(raw["Spead"], 120, 1, 1000000),
         collectDelay = Core.number(raw["Delay Collect Candy"], 1, 0, 30),
         crateThreshold = math.floor(Core.number(crates["Candies When"], 1800, 1, 1000000000000)),
         openDelay = Core.number(crates["Delay Open"], 0.5, 0, 60),
@@ -107,6 +134,43 @@ function Core.itemName(id, info)
     return tostring(name)
 end
 
+local ItemStyles = {
+        common = {rank=1, icon="⚪", color=9807270},
+        uncommon = {rank=2, icon="🟢", color=5763719},
+        rare = {rank=3, icon="🔵", color=3447003},
+        legendary = {rank=4, icon="🟣", color=10181046},
+        godly = {rank=5, icon="💎", color=16738740},
+        vintage = {rank=6, icon="🏛️", color=15844367},
+        classic = {rank=6, icon="🏛️", color=15844367},
+        ancient = {rank=7, icon="🔥", color=15105570},
+        unique = {rank=8, icon="🏆", color=16766720},
+        unknown = {rank=0, icon="📦", color=5037412},
+}
+local ChromaStyles = {}
+for rarity,style in pairs(ItemStyles) do
+    ChromaStyles[rarity]={rank=math.max(style.rank,5),icon="🌈",color=style.color}
+end
+function Core.itemStyle(info)
+    info = type(info) == "table" and info or {}
+    local rarity=Core.normalize(info.Rarity or "")
+    local styles=info.Chroma==true and ChromaStyles or ItemStyles
+    return styles[rarity] or styles.unknown
+end
+
+function Core.itemDisplay(id, info)
+    info = type(info) == "table" and info or {}
+    local style = Core.itemStyle(info)
+    local kind = Core.normalize(info.ItemType or "")
+    local icon = kind == "knife" and "🗡️" or kind == "gun" and "🔫" or "📦"
+    local name = Core.itemName(id, info):gsub("([\\`*_~|>])", "\\%1")
+    if style.rank >= 3 then
+        local rarity = tostring(info.Rarity or "Chroma")
+        if info.Chroma == true then rarity = "Chroma · " .. rarity end
+        return style.icon .. " " .. icon .. " **" .. name .. "** · " .. rarity
+    end
+    return icon .. " " .. name
+end
+
 function Core.itemLines(owned, database, wanted)
     local lines = {}
     local names = {}
@@ -116,13 +180,18 @@ function Core.itemLines(owned, database, wanted)
         if type(amount) == "number" and amount > 0 and info then
             local name = Core.itemName(id, info)
             if names[Core.normalize(name)] or names[Core.normalize(id)] then
-                local suffix = info.ItemType and " [" .. info.ItemType .. "]" or ""
-                lines[#lines + 1] = name .. suffix .. " x" .. math.floor(amount)
+                lines[#lines + 1] = {rank=Core.itemStyle(info).rank, name=name,
+                    text=Core.itemDisplay(id,info).." ×"..math.floor(amount)}
             end
         end
     end
-    table.sort(lines)
-    return #lines > 0 and table.concat(lines, "\n") or "None"
+    table.sort(lines,function(a,b) if a.rank~=b.rank then return a.rank>b.rank end;return a.name<b.name end)
+    local output, length = {}, 0
+    for _, entry in ipairs(lines) do
+        if length + #entry.text + 1 > 990 then output[#output+1]="…";break end
+        output[#output+1]=entry.text;length=length+#entry.text+1
+    end
+    return #output > 0 and table.concat(output, "\n") or "None"
 end
 
 function Core.battleNotice(filters, event)
@@ -141,7 +210,7 @@ function Core.duration(seconds)
     return string.format("%02d:%02d:%02d", math.floor(seconds / 3600), math.floor(seconds / 60) % 60, seconds % 60)
 end
 
-function Core.webhook(metrics, title, description, hook)
+function Core.webhook(metrics, title, description, hook, itemInfo)
     local ping = hook.ping and hook.discordID:match("^%d+$") ~= nil
     local function field(name, value, inline)
         return {name = name, value = tostring(value):sub(1, 1024), inline = inline == true}
@@ -151,14 +220,14 @@ function Core.webhook(metrics, title, description, hook)
         content = ping and "<@" .. hook.discordID .. ">" or "",
         allowed_mentions = {parse = {}, users = ping and {hook.discordID} or {}},
         embeds = {{
-            title = tostring(title):sub(1, 256), description = tostring(description):sub(1, 1024),
-            color = 5037412, url = "https://mtrchill.click",
+            title = ("🎃 " .. tostring(title)):sub(1, 256), description = tostring(description):sub(1, 1024),
+            color = itemInfo and Core.itemStyle(itemInfo).color or 5037412, url = "https://mtrchill.click",
             fields = {
-                field("User", metrics.user, true), field("Candies", metrics.candies, true),
-                field("Candies This Round", metrics.bag, true), field("Battle Pass Tier", metrics.tier, true),
-                field("Map", metrics.map, true), field("Role", metrics.role, true),
-                field("Round Time", metrics.roundTime, true), field("Elapsed", metrics.elapsed, true),
-                field("Items This Account", metrics.items, false),
+                field("👤 User", metrics.user, true), field("🍬 Candies", metrics.candies, true),
+                field("🎯 Candies This Round", metrics.bag, true), field("🏅 Battle Pass Tier", metrics.tier, true),
+                field("🗺️ Map", metrics.map, true), field("🎭 Role", metrics.role, true),
+                field("⏳ Round Time", metrics.roundTime, true), field("⏱️ Elapsed", metrics.elapsed, true),
+                field("🎒 Items This Account", metrics.items, false),
             },
             footer = {text = "mtrchill.click | Skider MM2 Kaitun"},
         }},
@@ -169,76 +238,72 @@ return Core
 
 end)()
 local AttachFPSBoost = (function()
-return function()
+-- FPS Boots: quet DUNG 1 LAN. Khong hook DescendantAdded, khong co vong lap nen,
+-- map load ve sau se khong bi xu ly lai. Quet theo time-slice nen khong giat game (an toan khi obf).
+local ACTION={
+    Decal="hide",Texture="hide",
+    ParticleEmitter="off",Trail="off",Beam="off",Smoke="off",Fire="off",Sparkles="off",
+    PointLight="off",SpotLight="off",SurfaceLight="off",SurfaceGui="off",BillboardGui="off",
+}
+local function getProp(object,property) return object[property] end
+local function setProp(object,property,value) object[property]=value end
+
+return function(fpsCap)
     local Players=game:GetService("Players")
     local Workspace=game:GetService("Workspace")
     local CollectionService=game:GetService("CollectionService")
     local Lighting=game:GetService("Lighting")
     local active=true
+    local stopped=false
     local originals=setmetatable({},{__mode="k"})
-    local connections={}
+    local camera=Workspace.CurrentCamera
+    local terrain=Workspace.Terrain
+    -- ngan sach thoi gian moi frame (giay): FPS cang thap thi cho phep nhieu hon, nhung luon bi chan tran
+    local budget=math.clamp(0.15/math.max(tonumber(fpsCap) or 60,1),0.002,0.02)
 
-    local function save(object,property)
+    local function change(object,property,value)
+        local ok,current=pcall(getProp,object,property)
+        if not ok or current==value then return end
         local values=originals[object]
         if not values then values={};originals[object]=values end
-        if values[property]==nil then
-            local ok,value=pcall(function() return object[property] end)
-            if ok then values[property]=value end
-        end
-    end
-    local function change(object,property,value)
-        save(object,property)
-        pcall(function() if object[property]~=value then object[property]=value end end)
+        if values[property]==nil then values[property]=current end
+        pcall(setProp,object,property,value)
     end
     local function restoreObject(object)
         local values=originals[object]
         if not values then return end
-        for property,value in pairs(values) do pcall(function() object[property]=value end) end
+        for property,value in pairs(values) do pcall(setProp,object,property,value) end
         originals[object]=nil
     end
-    local function protected(object)
-        for _,player in ipairs(Players:GetPlayers()) do
-            local character=player.Character
-            if character and (object==character or object:IsDescendantOf(character)) then return true end
-        end
-        local camera=Workspace.CurrentCamera
-        if camera and (object==camera or object:IsDescendantOf(camera)) then return true end
-        local current=object
-        while current and current~=Workspace do
-            if current:GetAttribute("CoinID")~=nil
-                or CollectionService:HasTag(current,"ServerCoinPart")
-                or CollectionService:HasTag(current,"CoinVisual")
-                or current.Name=="Coin_Server" or current.Name=="CoinVisual" then return true end
-            current=current.Parent
-        end
+    -- true = bo qua ca nhanh nay (nhan vat, camera, coin, terrain)
+    local function skip(node)
+        local className=node.ClassName
+        if className=="Terrain" or node==camera then return true end
+        local name=node.Name
+        if name=="Coin_Server" or name=="CoinVisual" then return true end
+        if node:GetAttribute("CoinID")~=nil then return true end
+        if CollectionService:HasTag(node,"ServerCoinPart") or CollectionService:HasTag(node,"CoinVisual") then return true end
+        if className=="Model" and node.Parent==Workspace and Players:GetPlayerFromCharacter(node) then return true end
         return false
     end
     local function optimize(object)
-        if not active or not object.Parent then return end
-        if protected(object) then restoreObject(object);return end
-        if object:IsA("BasePart") then
+        local action=ACTION[object.ClassName]
+        if action=="off" then
+            change(object,"Enabled",false)
+        elseif action=="hide" then
+            change(object,"Transparency",1)
+        elseif object:IsA("BasePart") then
             change(object,"Transparency",1)
             change(object,"LocalTransparencyModifier",1)
             change(object,"CastShadow",false)
-            change(object,"Reflectance",0)
-            if object:IsA("MeshPart") then change(object,"RenderFidelity",Enum.RenderFidelity.Performance) end
-        elseif object:IsA("Decal") or object:IsA("Texture") then
-            change(object,"Transparency",1)
-        elseif object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam")
-            or object:IsA("Smoke") or object:IsA("Fire") or object:IsA("Sparkles")
-            or object:IsA("PointLight") or object:IsA("SpotLight") or object:IsA("SurfaceLight")
-            or object:IsA("SurfaceGui") or object:IsA("BillboardGui") then
-            change(object,"Enabled",false)
-        end
-    end
-    local function optimizeLighting()
-        if not active then return end
-        change(Lighting,"GlobalShadows",false)
-        for _,object in ipairs(Lighting:GetDescendants()) do
-            if object:IsA("PostEffect") then change(object,"Enabled",false) end
         end
     end
 
+    -- Lighting / chat luong do hoa: chinh 1 lan
+    change(Lighting,"GlobalShadows",false)
+    for _,object in ipairs(Lighting:GetDescendants()) do
+        if object:IsA("PostEffect") then change(object,"Enabled",false) end
+    end
     local quality
     local qualityOK,rendering=pcall(function() return settings().Rendering end)
     if qualityOK and rendering then
@@ -248,38 +313,53 @@ return function()
             pcall(function() rendering.QualityLevel=Enum.QualityLevel.Level01 end)
         end
     end
-    local terrain=Workspace.Terrain
     local decorationOK,decoration=pcall(function() return terrain.Decoration end)
     if decorationOK and decoration~=nil and typeof(sethiddenproperty)=="function" then
         pcall(sethiddenproperty,terrain,"Decoration",false)
     end
 
-    connections[#connections+1]=Workspace.DescendantAdded:Connect(function(object)
-        if active then task.defer(function() if active then optimize(object) end end) end
-    end)
-    connections[#connections+1]=Lighting.DescendantAdded:Connect(function(object)
-        if active and object:IsA("PostEffect") then change(object,"Enabled",false) end
-    end)
+    -- Quet Workspace 1 lan bang stack (khong goi GetDescendants 1 phat nen khong bi khung hinh)
     task.spawn(function()
-        while active do
-            optimizeLighting()
-            for index,object in ipairs(Workspace:GetDescendants()) do
-                if not active then return end
-                optimize(object)
-                if index%750==0 then task.wait() end
-            end
-            task.wait(2)
+        local stack,top={},0
+        local okRoots,roots=pcall(Workspace.GetChildren,Workspace)
+        if okRoots then
+            for i=1,#roots do top=top+1;stack[top]=roots[i] end
         end
+        local started,count=os.clock(),0
+        while active and top>0 do
+            local node=stack[top];stack[top]=nil;top=top-1
+            if node.Parent and not skip(node) then
+                optimize(node)
+                local okKids,kids=pcall(node.GetChildren,node)
+                if okKids then
+                    for i=1,#kids do top=top+1;stack[top]=kids[i] end
+                end
+            end
+            count=count+1
+            if count>=32 then
+                count=0
+                if os.clock()-started>=budget then task.wait();started=os.clock() end
+            end
+        end
+        stack=nil
     end)
+
     local function stop()
-        if not active then return end
+        if not active then
+            while not stopped do task.wait() end
+            return
+        end
         active=false
-        for _,connection in ipairs(connections) do connection:Disconnect() end
-        for object in pairs(originals) do restoreObject(object) end
+        local started,count=os.clock(),0
+        for object in pairs(originals) do
+            restoreObject(object);count=count+1
+            if count>=24 or os.clock()-started>=0.0015 then task.wait();started=os.clock();count=0 end
+        end
         if quality~=nil then pcall(function() rendering.QualityLevel=quality end) end
         if decorationOK and decoration~=nil and typeof(sethiddenproperty)=="function" then
             pcall(sethiddenproperty,terrain,"Decoration",decoration)
         end
+        stopped=true
     end
     return {Stop=stop}
 end
@@ -289,7 +369,7 @@ local AttachKaitun = (function()
 
 return function(Context)
 
-repeat task.wait() until game:IsLoaded()
+AwaitBoot(function() return game:IsLoaded() end,"game loaded")
 local Env = Context.env
 if game.PlaceId ~= 142823291 then error("[Skider] Join MM2 before running.") end
 if type(Env.SkiderMM2)=="table" and type(Env.SkiderMM2.Stop)=="function" then pcall(Env.SkiderMM2.Stop) end
@@ -301,18 +381,18 @@ local RS=game:GetService("ReplicatedStorage")
 local Collection=game:GetService("CollectionService")
 local Http=game:GetService("HttpService")
 local UIS=game:GetService("UserInputService")
-local Player=Players.LocalPlayer
-local PlayerGui=Player:WaitForChild("PlayerGui")
-local Remotes=RS:WaitForChild("Remotes")
-local Gameplay=Remotes:WaitForChild("Gameplay")
-local Inventory=Remotes:WaitForChild("Inventory")
-local Shop=Remotes:WaitForChild("Shop")
+local Player=AwaitBoot(function() return Players.LocalPlayer end,"LocalPlayer")
+local PlayerGui=BootChild(Player,"PlayerGui")
+local Remotes=BootChild(RS,"Remotes")
+local Gameplay=BootChild(Remotes,"Gameplay")
+local Inventory=BootChild(Remotes,"Inventory")
+local Shop=BootChild(Remotes,"Shop")
 local function LoadModule(module: any): any return require(module) end
-local Sync=LoadModule(RS:WaitForChild("Database"):WaitForChild("Sync"))
-local Round=LoadModule(RS:WaitForChild("Modules"):WaitForChild("CurrentRoundClient"))
-local EventInfo=LoadModule(RS:WaitForChild("SharedServices"):WaitForChild("EventInfoService"))
+local Sync=LoadModule(BootChild(BootChild(RS,"Database"),"Sync"))
+local Round=LoadModule(BootChild(BootChild(RS,"Modules"),"CurrentRoundClient"))
+local EventInfo=LoadModule(BootChild(BootChild(RS,"SharedServices"),"EventInfoService"))
 local function WaitForEvent()
-    while true do
+    return AwaitBoot(function()
         local ok,event=pcall(EventInfo.GetMainEvent,EventInfo)
         local info=ok and type(event)=="table" and event.EventStartInfo
         local pass=type(info)=="table" and info.BattlePass
@@ -325,12 +405,11 @@ local function WaitForEvent()
             and type(Sync.Weapons)=="table" and next(Sync.Weapons)~=nil then
             return event
         end
-        task.wait(0.25)
-    end
+    end,"Halloween event data")
 end
 local Event=WaitForEvent()
 local BP=Event.EventStartInfo.BattlePass
-local HW=Remotes:WaitForChild("Events"):WaitForChild(Event.Title.."Remotes")
+local HW=BootChild(BootChild(Remotes,"Events"),Event.Title.."Remotes")
 local Currency=Config.currencyID~="" and Config.currencyID or Event.EventStartInfo.CurrencyName
 local TargetTier=math.min(Config.tierCap,BP.TotalTiers)
 local CrateID=Config.crateID
@@ -339,19 +418,29 @@ assert(Config.mode~=1 or (Sync.NewShop[CrateID] and Sync.NewShop[CrateID].Type==
 local CrateCost=Config.mode==1 and tonumber(Sync.NewShop[CrateID].Price[Currency]) or 0
 assert(Config.mode~=1 or (CrateCost and CrateCost>0 and Config.crateThreshold>=CrateCost),"[Skider] Crate threshold must cover one crate.")
 assert(Config.mode~=2 or (BP.TierCost>0 and Config.passThreshold>=BP.TierCost),"[Skider] Tier threshold must cover one tier.")
+local ProfileCategories={Weapons=true,Materials=true}
+for _,reward in pairs(BP.Rewards) do
+    if type(reward)=="table" and type(reward.ItemType)=="string" then ProfileCategories[reward.ItemType]=true end
+end
+if type(BP.FinalRewardType)=="string" then ProfileCategories[BP.FinalRewardType]=true end
 local S={running=true,paused=false,status="Starting",notice="",started=os.clock(),bag=0,maxBag=50,epoch=0,waiting=false,ended=false,
     available=0,profile=nil,profileAt=0,map=nil,mapCF=nil,mapSize=nil,mapChecked=0,tween=nil,moveToken=0,
     connections={},failed={},transaction=false,purchaseBlocked=false,claimPending={},inflight=nil,logQueue={},webhookQueue={},
     session=tostring(os.time()).."-"..tostring(math.floor(os.clock()*1000)),receipts=0,errors=0,webhookStatus="Disabled",lastWebhook=0,
-    lastProfileRead=-math.huge,completed=false,collected=0,finalPending=false}
+    lastProfileRead=-math.huge,completed=false,collected=0,finalPending=false,itemsDirty=true,itemsText="None"}
 local API={}
 Env.SkiderMM2=API
 local Ui,Labels,Notify,FpsBoost
-local function clone(value)
+local function clone(value,seen)
     if type(value)~="table" then return value end
-    local out={};for k,v in pairs(value) do out[k]=clone(v) end;return out
+    seen=seen or {}
+    if seen[value] then return seen[value] end
+    local out={};seen[value]=out
+    for k,v in pairs(value) do out[k]=clone(v,seen) end
+    return out
 end
 local function log(event,details)
+    if #S.logQueue>=200 then return end
     local ok,body=pcall(Http.JSONEncode,Http,details or {})
     S.logQueue[#S.logQueue+1]=string.format("[%s %.3f] %s %s\n",S.session,os.clock(),event,ok and body or "{}")
 end
@@ -364,8 +453,9 @@ local function connect(signal,callback)
     S.connections[#S.connections+1]=c;return c
 end
 local function cancelMovement()
+    local moving=Context.config.AutoCandy or Context.snapshot().moving
     Context.config.AutoCandy=false
-    Context.cancel()
+    if moving then Context.cancel() end
 end
 local function syncBase()
     local base=Context.snapshot()
@@ -412,36 +502,41 @@ local function canFarm()
     return not blockedByVerification() and Core.canFarm({enabled=S.running,paused=S.paused or S.transaction or Validation.NoMovement==true,
         waiting=S.waiting,ended=S.ended,timer=timer(),inMap=inMap(r),characterAlive=h~=nil,member=member()})
 end
-local function metrics()
+local function metrics(includeItems)
     syncBase()
     local m=member()
     local _,humanoid,root=currentCharacter()
+    local remaining=timer()
+    if includeItems~=false and S.itemsDirty then
+        S.itemsText=Core.itemLines(S.profile and S.profile.owned.Weapons or {},Sync.Weapons,Config.noteItems)
+        S.itemsDirty=false
+    end
     return {user=Player.Name,candies=balance(),bag=string.format("%d/%d",S.bag,S.maxBag),
         tier=string.format("%d/%d",tonumber(passData().CurrentTier) or 0,BP.TotalTiers),map=findMap() and S.map.Name or "Lobby",
-        role=Core.isRoundMember(m) and humanoid~=nil and inMap(root) and timer()>0 and not S.ended and m.Role or "Spectator",
-        roundTime=timer()>0 and string.format("%02d:%02d",math.floor(timer()/60),timer()%60) or "N/A",
-        elapsed=Core.duration(os.clock()-S.started),items=Core.itemLines(S.profile and S.profile.owned.Weapons or {},Sync.Weapons,Config.noteItems)}
+        role=Core.isRoundMember(m) and humanoid~=nil and inMap(root) and remaining>0 and not S.ended and m.Role or "Spectator",
+        roundTime=remaining>0 and string.format("%02d:%02d",math.floor(remaining/60),remaining%60) or "N/A",
+        elapsed=Core.duration(os.clock()-S.started),items=includeItems~=false and S.itemsText or nil}
 end
 local function validWebhook(url)
     return url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+") or url:match("^https://discord%.com/api/v%d+/webhooks/%d+/[%w_%-]+")
         or url:match("^https://discordapp%.com/api/webhooks/%d+/[%w_%-]+")
 end
-Notify=function(event,description,battle)
+Notify=function(event,description,battle,itemInfo)
     log(event,{message=description,balance=balance(),tier=passData().CurrentTier})
     if blockedByVerification() then return end
     if Validation.NoWebhook or not Config.webhook.enabled or Config.webhook.url=="" then return end
     if battle and not Core.battleNotice(Config.battleNotices,event) then return end
     if not validWebhook(Config.webhook.url) then S.webhookStatus="Invalid URL";return end
     if #S.webhookQueue>=40 then S.webhookStatus="Queue full";return end
-    S.webhookQueue[#S.webhookQueue+1]=Core.webhook(metrics(),event,description,Config.webhook)
+    S.webhookQueue[#S.webhookQueue+1]=Core.webhook(metrics(),event,description,Config.webhook,itemInfo)
 end
 local function applyProfile(data)
     if type(data)~="table" or type(data.Materials)~="table" or type(data[Event.Title])~="table" then return false end
     local owned={}
-    for _,cat in ipairs({"Weapons","Materials","Toys","Effects","Emotes","Pets","Radios","Perks"}) do
+    for cat in pairs(ProfileCategories) do
         owned[cat]=clone(type(data[cat])=="table" and data[cat].Owned or {})
     end
-    S.profile={event=clone(data[Event.Title]),materials=owned.Materials,owned=owned};S.profileAt=os.clock();return true
+    S.profile={event=clone(data[Event.Title]),materials=owned.Materials,owned=owned};S.profileAt=os.clock();S.itemsDirty=true;return true
 end
 
 local function invoke(remote,args,timeout)
@@ -491,7 +586,7 @@ local function claimUnlocked()
         if not confirmed then S.notice="Tier "..key.." claim not confirmed; no automatic retry";Notify("Claim pending",S.notice,true);return false end
         if (passData().ClaimedRewards or {})[key]==true then S.claimPending[key]=nil end
         S.receipts=S.receipts+1
-        Notify("Reward claimed","Tier "..key.." | "..Core.itemName(reward.ItemID,Sync.Weapons[reward.ItemID]),true);task.wait(0.25)
+        Notify("Reward claimed","Tier "..key.." | "..Core.itemDisplay(reward.ItemID,Sync.Weapons[reward.ItemID]),true,Sync.Weapons[reward.ItemID]);task.wait(0.25)
         if S.claimPending[key] then return false end
     end
     return true
@@ -511,7 +606,7 @@ local function purchaseBatch()
             local expected=Core.ownedCount(before,item)+1
             if not waitConfirm(function(p) return Core.ownedCount(p.owned.Weapons,item)>=expected end) then uncertain("Crate inventory not confirmed");break end
             if S.running then fire(Shop:WaitForChild("CrateComplete"),item) end
-            S.receipts=S.receipts+1;Notify("Crate opened",Core.itemName(item,Sync.Weapons[item]).." | "..CrateID)
+            S.receipts=S.receipts+1;Notify("Crate opened",Core.itemDisplay(item,Sync.Weapons[item]).." | "..CrateID,false,Sync.Weapons[item])
             local deadline=os.clock()+Config.openDelay
             while S.running and not S.paused and os.clock()<deadline do task.wait(0.05) end
         end
@@ -538,7 +633,7 @@ local function purchaseBatch()
                 local confirmed=sent and waitConfirm(function(p)
                     return (tonumber(p.event.FinalRewardClaimAmount) or 0)>old or Core.ownedCount(p.owned[BP.FinalRewardType],BP.FinalReward)>before
                 end)
-                if confirmed then S.receipts=S.receipts+1;Notify("Final reward claimed",Core.itemName(BP.FinalReward,Sync.Weapons[BP.FinalReward]),true)
+                if confirmed then S.receipts=S.receipts+1;Notify("Final reward claimed",Core.itemDisplay(BP.FinalReward,Sync.Weapons[BP.FinalReward]),true,Sync.Weapons[BP.FinalReward])
                 else uncertain("Final reward not confirmed") end
             end
         end
@@ -574,17 +669,17 @@ local function buildCompactUI()
             TextYAlignment=Enum.TextYAlignment.Center,BackgroundTransparency=1,TextTruncate=Enum.TextTruncate.AtEnd},main)
     end
     label("Title","Skider MM2 Kaitun",18,27,310,32,23,green)
-    label("UserCaption","USER",19,98,80,18,11,Color3.fromRGB(143,169,148))
+    label("UserCaption","👤 USER",19,98,100,18,11,Color3.fromRGB(143,169,148))
     label("User",Player.Name,19,117,320,27,17)
-    label("Mode","Mode: "..(Config.mode==1 and "Crates" or "Battlepass"),19,146,320,20,13,green)
-    label("CandyCaption","CANDIES",19,181,150,18,11,Color3.fromRGB(143,169,148))
+    label("Mode",(Config.mode==1 and "📦 Mode: Crates" or "🏅 Mode: Battlepass"),19,146,320,20,13,green)
+    label("CandyCaption","🍬 CANDIES",19,181,150,18,11,Color3.fromRGB(143,169,148))
     local candies=label("Candies","Loading",19,201,150,28,23,green)
-    label("BagCaption","THIS ROUND",196,181,145,18,11,Color3.fromRGB(143,169,148))
+    label("BagCaption","🎯 THIS ROUND",196,181,145,18,11,Color3.fromRGB(143,169,148))
     local bag=label("Bag","0/50",196,201,145,28,23)
-    local state=label("Status","Status Farming : Starting",19,240,322,38,13,green)
+    local state=label("Status","⚡ Status Farming : Starting",19,240,322,38,13,green)
     state.TextWrapped=true;state.TextTruncate=Enum.TextTruncate.None
     local info=label("Round","Lobby | Spectator | Tier 0",19,280,322,20,11,Color3.fromRGB(163,184,168))
-    local elapsed=label("Elapsed","Total time elapsed : 00:00:00",19,304,265,20,12)
+    local elapsed=label("Elapsed","⏱️ Elapsed : 00:00:00",19,304,265,20,12)
     label("Brand","mtrchill.click",19,339,220,19,13,green)
     local pause=make("TextButton",{Text="PAUSE",Position=UDim2.fromOffset(272,333),Size=UDim2.fromOffset(69,26),Font=Enum.Font.FredokaOne,
         TextSize=11,TextColor3=green,BackgroundColor3=Color3.fromRGB(24,39,27),BorderSizePixel=0},main)
@@ -609,9 +704,9 @@ local function buildCompactUI()
     end)
     local bindings={
         SetCandies=function(total,thisRound) candies.Text=tostring(total);bag.Text=tostring(thisRound) end,
-        SetStatus=function(text) state.Text="Status Farming : "..tostring(text) end,
-        SetInfo=function(map,role,tier) info.Text=tostring(map).." | "..tostring(role).." | Tier "..tostring(tier) end,
-        SetElapsed=function(time,roundTime) elapsed.Text="Total time elapsed : "..tostring(time);info.Text=info.Text.." | "..tostring(roundTime) end,
+        SetStatus=function(text) state.Text="⚡ Status Farming : "..tostring(text) end,
+        SetInfo=function(map,role,tier) info.Text="🗺️ "..tostring(map).." | "..tostring(role).." | 🏅 "..tostring(tier) end,
+        SetElapsed=function(time,roundTime) elapsed.Text="⏱️ Elapsed : "..tostring(time);info.Text=info.Text.." | "..tostring(roundTime) end,
     }
     API.UI=bindings
     return screen,bindings
@@ -803,7 +898,10 @@ API.UI = bindings
 return ScreenGui, bindings
 end
 function API.Stop()
-    if not S.running then return end
+    if not S.running then
+        if FpsBoost then FpsBoost.Stop() end
+        return
+    end
     S.running=false;cancelMovement();Context.abortReset()
     if FpsBoost then FpsBoost.Stop();FpsBoost=nil end
     for _,c in ipairs(S.connections) do c:Disconnect() end
@@ -814,29 +912,29 @@ function API.Snapshot()
     return {running=S.running,paused=S.paused,status=S.status,notice=S.notice,bag=S.bag,maxBag=S.maxBag,balance=balance(),
         tier=passData().CurrentTier,targetTier=TargetTier,map=findMap() and S.map.Name or "Lobby",eligible=not blockedByVerification(),
         canFarm=canFarm(),mode=Config.mode,receipts=S.receipts,errors=S.errors,purchaseBlocked=S.purchaseBlocked,webhook=S.webhookStatus,
-        available=S.available,collected=S.collected,role=metrics().role,base="scripts/01_auto_candy_farm.lua",
+        available=S.available,collected=S.collected,role=metrics(false).role,base="scripts/01_auto_candy_farm.lua",
         config={crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,speed=Config.speed,openDelay=Config.openDelay}}
 end
 function API.SetPaused(value) S.paused=value==true;cancelMovement() end
-if type(STATE)=="table" then STATE.onCleanup(API.Stop);STATE.api=API end
+if type(STATE)=="table" and type(STATE.onCleanup)=="function" then STATE.onCleanup(API.Stop);STATE.api=API end
 pcall(function()
     local old=game:GetService("CoreGui"):FindFirstChild("MM2CandyUI")
     if old then old:Destroy() end
 end)
 if typeof(setfpscap)=="function" then pcall(setfpscap,Config.fps) end
-if Config.fpsBoost then FpsBoost=AttachFPSBoost() end
 Ui,Labels=buildUI()
 
-applyProfile(LoadModule(RS:WaitForChild("Modules"):WaitForChild("ProfileData")))
+applyProfile(LoadModule(BootChild(BootChild(RS,"Modules"),"ProfileData")))
 local bagGui=PlayerGui:FindFirstChild("MainGUI")
 bagGui=bagGui and bagGui:FindFirstChild("Game");bagGui=bagGui and bagGui:FindFirstChild("CoinBags")
 bagGui=bagGui and bagGui:FindFirstChild("Container");bagGui=bagGui and bagGui:FindFirstChild("Candy")
 if bagGui then local currency=bagGui:FindFirstChild("CurrencyFrame");local icon=currency and currency:FindFirstChild("Icon");local n=icon and icon:FindFirstChild("Coins");if n and n:IsA("TextLabel") then S.bag=tonumber(n.Text) or 0;Context.setBag(S.bag) end end
-connect(Inventory:WaitForChild("ChangeProfileData").OnClientEvent,function(key,value)
+connect(BootChild(Inventory,"ChangeProfileData").OnClientEvent,function(key,value)
     if S.profile and key==Event.Title and type(value)=="table" then S.profile.event=clone(value);S.profileAt=os.clock() end
 end)
-connect(Inventory:WaitForChild("ChangeInventoryItem").OnClientEvent,function(category,id,amount)
+connect(BootChild(Inventory,"ChangeInventoryItem").OnClientEvent,function(category,id,amount)
     if not S.profile then return end
+    if category=="Weapons" then S.itemsDirty=true end
     if category=="Materials" or category=="Weapons" or category=="Pets" then
         S.profile.owned[category]=S.profile.owned[category] or {};S.profile.owned[category][id]=tonumber(amount) or 0
         if category=="Materials" then S.profile.materials=S.profile.owned.Materials end
@@ -845,7 +943,7 @@ connect(Inventory:WaitForChild("ChangeInventoryItem").OnClientEvent,function(cat
         if Core.ownedCount(S.profile.owned[category],id)==0 then table.insert(S.profile.owned[category],id) end
     end
 end)
-connect(Gameplay:WaitForChild("CoinCollected").OnClientEvent,function(id,amount,maximum)
+connect(BootChild(Gameplay,"CoinCollected").OnClientEvent,function(id,amount,maximum)
     if id=="Candy" then
         local new=tonumber(amount) or S.bag
         S.collected=S.collected+math.max(0,new-S.bag)
@@ -853,13 +951,13 @@ connect(Gameplay:WaitForChild("CoinCollected").OnClientEvent,function(id,amount,
         log("CANDY_COLLECTED",{bag=S.bag,maxBag=S.maxBag})
     end
 end)
-connect(Gameplay:WaitForChild("CoinsStarted").OnClientEvent,function(data)
+connect(BootChild(Gameplay,"CoinsStarted").OnClientEvent,function(data)
     S.epoch=S.epoch+1;S.waiting=false;S.ended=false;S.failed={};S.bag=0;cancelMovement()
     local candy=type(data)=="table" and data.Candy
     if type(candy)=="table" then S.bag=tonumber(candy.CollectedAmount) or 0;S.maxBag=tonumber(candy.CollectionLimit) or S.maxBag;Context.setBag(S.bag,S.maxBag) end
     Notify("Round started","A new round is available")
 end)
-connect(Gameplay:WaitForChild("RoundStart").OnClientEvent,function() S.ended=false;cancelMovement() end)
+connect(BootChild(Gameplay,"RoundStart").OnClientEvent,function() S.ended=false;cancelMovement() end)
 for _,name in ipairs({"GameOver","RoundEndFade","VictoryScreen"}) do
     local remote=Gameplay:FindFirstChild(name)
     if remote then connect(remote.OnClientEvent,function()
@@ -867,8 +965,14 @@ for _,name in ipairs({"GameOver","RoundEndFade","VictoryScreen"}) do
         S.ended=true;cancelMovement()
     end) end
 end
-connect(Gameplay:WaitForChild("PlayerDataChanged").OnClientEvent,function()
-    task.defer(function() if S.running and not canFarm() then cancelMovement() end end)
+local roundCheckPending=false
+connect(BootChild(Gameplay,"PlayerDataChanged").OnClientEvent,function()
+    if roundCheckPending then return end
+    roundCheckPending=true
+    task.defer(function()
+        roundCheckPending=false
+        if S.running and not canFarm() then cancelMovement() end
+    end)
 end)
 connect(Player:GetAttributeChangedSignal("Alive"),function() if not canFarm() then cancelMovement() end end)
 connect(Player:GetAttributeChangedSignal("Authenticated"),cancelMovement)
@@ -909,15 +1013,20 @@ task.spawn(function()
     end
 end)
 task.spawn(function()
+    local last={}
     while S.running do
-        local m=metrics()
-        Labels.SetCandies(m.candies,m.bag)
+        local m=metrics(false)
+        if m.candies~=last.candies or m.bag~=last.bag then Labels.SetCandies(m.candies,m.bag) end
         local shownStatus=blockedByVerification() and "Required Buy/Premium Or Verification Age" or S.paused and "Paused" or S.status
         if S.notice~="" and not blockedByVerification() then shownStatus=S.notice end
-        Labels.SetStatus(shownStatus)
-        Labels.SetInfo(m.map,m.role,m.tier)
-        Labels.SetElapsed(m.elapsed,m.roundTime)
-        task.wait(0.25)
+        if shownStatus~=last.status then Labels.SetStatus(shownStatus) end
+        if m.map~=last.map or m.role~=last.role or m.tier~=last.tier
+            or m.elapsed~=last.elapsed or m.roundTime~=last.roundTime then
+            Labels.SetInfo(m.map,m.role,m.tier)
+            Labels.SetElapsed(m.elapsed,m.roundTime)
+        end
+        last=m;last.status=shownStatus
+        task.wait(0.5)
     end
 end)
 Notify("Started","Mode "..Config.mode.." | "..(Config.mode==1 and "Crates" or "Battle Pass"))
@@ -973,18 +1082,24 @@ function API.BeforeCycle()
 end
 
 task.spawn(function()
+    local nextCount=0
     while S.running do
         local base=syncBase()
         if not canFarm() or S.completed then
             if Context.config.AutoCandy or base.moving then cancelMovement() end
         end
         if blockedByVerification() then Context.abortReset() end
-        local count=0
-        for _,coin in ipairs(Collection:GetTagged("ServerCoinPart")) do
-            if Context.validCandy(coin) then count=count+1 end
+        if os.clock()>=nextCount then
+            local count=0
+            for index,coin in ipairs(Collection:GetTagged("ServerCoinPart")) do
+                if not S.running then return end
+                if Context.validCandy(coin) then count=count+1 end
+                if index%32==0 then task.wait() end
+            end
+            S.available=count
+            nextCount=os.clock()+1
         end
-        S.available=count
-        task.wait(0.1)
+        task.wait(0.5)
     end
 end)
 API.Connect=connect
@@ -994,82 +1109,92 @@ API.MovementError=function(message) log("MOVEMENT_ERROR",{message=tostring(messa
 log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,targetTier=TargetTier,speed=Config.speed,
     validation={movement=Validation.NoMovement==true,spending=Validation.NoSpending==true}})
 
+if Config.fpsBoost then
+    task.delay(10,function()
+        if not S.running or Env.SkiderMM2Boot~=Boot or Env.SkiderMM2~=API then return end
+        local ok,boost=pcall(AttachFPSBoost,Config.fps)
+        if ok then FpsBoost=boost
+        else log("FPS_BOOST_ERROR",{message=tostring(boost)}) end
+    end)
+end
+
 return API
 
 end
 
 end)()
+WaitGameReady()
 if type(Env.SkiderMM2)=="table" and type(Env.SkiderMM2.Stop)=="function" then pcall(Env.SkiderMM2.Stop) end
 if type(Env.MM2CandyConfig)=="table" then Env.MM2CandyConfig.AutoCandy=false end
 
-repeat task.wait() until game:IsLoaded()
+AwaitBoot(function() return game:IsLoaded() end,"game loaded")
 
 local Players = game:GetService("Players")
-local PathfindingService = game:GetService("PathfindingService")
+local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
-local Player = Players.LocalPlayer
-
-repeat task.wait()
-until Player
-    and Player.Character
-    and Player:FindFirstChild("PlayerGui")
+local Player = AwaitBoot(function() return Players.LocalPlayer end,"LocalPlayer")
+AwaitBoot(function() return Player.Character end,"Character")
+BootChild(Player,"PlayerGui")
 
 local Config = {
     AutoCandy = false,
-
+    Stabilizer = true,
     TweenSpeed = 120,
-
     CollectDelay = 1,
-
     ResetDelay = 2,
-
     YOffset = 1.8,
-
     SafeTween = true,
-
-    SegmentDistance = 14,
-
-    SegmentDelay = 0.04,
-
+    SegmentDistance = 10,
+    SegmentDelay = 0.03,
     CollectTimeout = 4,
-
     FailedTargetDelay = 3,
+    FinalDistance = 5,
+    FinalSpeed = 28,
+    FinalHold = 0.18,
+    TouchSweep = true,
+    SweepDistance = 0.28,
+    SweepSpeed = 14,
+    StabilizerResponsiveness = 35,
+    StabilizerTorqueMultiplier = 4500,
 }
 
 local Settings = Core.config(Env.ConfigKaitunMM2Hallowen2026,Env.ModeFarming,Env.Fpslock)
+local EffectiveFPS = math.max(1,tonumber(Settings.fps) or 60)
+local LowFPS = EffectiveFPS <= 10
+local FrameTime = 1 / EffectiveFPS
 Config.TweenSpeed=Settings.speed
 Config.CollectDelay=Settings.collectDelay
 Config.ResetDelay=Settings.resetDelay
-Config.SegmentDistance=Settings.segment
+Config.SegmentDistance=LowFPS and math.clamp(Config.TweenSpeed / EffectiveFPS,18,36) or math.min(Settings.segment,10)
+Config.SegmentDelay=LowFPS and 0 or Config.SegmentDelay
+if LowFPS then
+    Config.FinalDistance=8
+    Config.FinalSpeed=math.min(Config.FinalSpeed,math.max(16,EffectiveFPS*4))
+    Config.FinalHold=math.max(Config.FinalHold,FrameTime*2)
+    Config.SweepDistance=0.55
+    Config.SweepSpeed=math.min(Config.SweepSpeed,10)
+    Config.StabilizerResponsiveness=50
+    Config.StabilizerTorqueMultiplier=6000
+end
 Env.MM2CandyConfig = Config
 
-local Remotes =
-    ReplicatedStorage:
-    WaitForChild("Remotes")
-
-local Gameplay =
-    Remotes:
-    WaitForChild("Gameplay")
-
-local CoinCollected =
-    Gameplay:
-    WaitForChild("CoinCollected")
-
-local CoinsStarted =
-    Gameplay:
-    WaitForChild("CoinsStarted")
+local Remotes = BootChild(ReplicatedStorage,"Remotes")
+local Gameplay = BootChild(Remotes,"Gameplay")
+local CoinCollected = BootChild(Gameplay,"CoinCollected")
+local CoinsStarted = BootChild(Gameplay,"CoinsStarted")
 
 local CurrentBag = 0
 local MaxBag = 50
 
 local IsMoving = false
+local CurrentTween = nil
 local CurrentTarget = nil
 local MoveGeneration = 0
-local RouteConnection = nil
+local StabilizerData = nil
 local Addon
 
 local WaitingNextRound = false
@@ -1081,7 +1206,6 @@ local FailedTargets =
     })
 
 local function GetCharacter()
-
     local Character =
         Player.Character
 
@@ -1113,25 +1237,339 @@ local function GetCharacter()
         Root
 end
 
-local function CancelTween()
-    MoveGeneration = MoveGeneration + 1
-    if RouteConnection then
-        RouteConnection:Disconnect()
-        RouteConnection = nil
+local function MovementAllowed(
+    Token,
+    Character
+)
+    if Token ~= MoveGeneration
+        or not Config.AutoCandy
+        or WaitingNextRound then
+
+        return false
     end
-    IsMoving = false
-    CurrentTarget = nil
+
+    local Current,
+        Humanoid,
+        Root =
+        GetCharacter()
+
+    if not Current
+        or not Humanoid
+        or not Root
+        or Current ~= Character then
+
+        return false
+    end
+
+    if not Addon then
+        return false
+    end
+
+    if type(Addon.CanFarm) == "function"
+        and not Addon.CanFarm() then
+
+        return false
+    end
+
+    return true
 end
 
-local function IsValidCandy(Object)
+local function CleanupStabilizer()
+    local Data =
+        StabilizerData
 
+    StabilizerData =
+        nil
+
+    if not Data then
+        return
+    end
+
+    if Data.Connection then
+        pcall(function()
+            Data.Connection:
+                Disconnect()
+        end)
+    end
+
+    if Data.Humanoid
+        and Data.Humanoid.Parent then
+
+        pcall(function()
+            Data.Humanoid.AutoRotate =
+                Data.AutoRotate
+        end)
+
+        pcall(function()
+            Data.Humanoid.PlatformStand =
+                false
+        end)
+    end
+
+    if Data.Align then
+        pcall(function()
+            Data.Align:
+                Destroy()
+        end)
+    end
+
+    if Data.Attachment then
+        pcall(function()
+            Data.Attachment:
+                Destroy()
+        end)
+    end
+end
+
+local function BuildOrientation(
+    Root,
+    Target
+)
+    local Direction =
+        Target
+        - Root.Position
+
+    local Flat =
+        Vector3.new(
+            Direction.X,
+            0,
+            Direction.Z
+        )
+
+    if Flat.Magnitude
+        < 0.05 then
+
+        local Look =
+            Root.CFrame.LookVector
+
+        Flat =
+            Vector3.new(
+                Look.X,
+                0,
+                Look.Z
+            )
+    end
+
+    if Flat.Magnitude
+        < 0.05 then
+
+        Flat =
+            Vector3.new(
+                0,
+                0,
+                -1
+            )
+
+    else
+
+        Flat =
+            Flat.Unit
+    end
+
+    return CFrame.lookAt(
+        Vector3.zero,
+        Flat,
+        Vector3.yAxis
+    )
+end
+
+local function StartStabilizer(
+    Root,
+    Target
+)
+    if not Config.Stabilizer then
+        return
+    end
+
+    local Character,
+        Humanoid,
+        CurrentRoot =
+        GetCharacter()
+
+    if not Character
+        or not Humanoid
+        or CurrentRoot ~= Root then
+
+        return
+    end
+
+    if StabilizerData
+        and StabilizerData.Root
+            == Root then
+
+        StabilizerData.Align.CFrame =
+            BuildOrientation(
+                Root,
+                Target
+            )
+
+        return
+    end
+
+    CleanupStabilizer()
+
+    local Attachment =
+        Instance.new(
+            "Attachment"
+        )
+
+    Attachment.Name =
+        "MM2TweenStabilizerAttachment"
+
+    Attachment.Parent =
+        Root
+
+    local Align =
+        Instance.new(
+            "AlignOrientation"
+        )
+
+    Align.Name =
+        "MM2TweenStabilizer"
+
+    Align.Mode =
+        Enum.OrientationAlignmentMode.OneAttachment
+
+    Align.Attachment0 =
+        Attachment
+
+    Align.RigidityEnabled =
+        false
+
+    Align.ReactionTorqueEnabled =
+        false
+
+    Align.Responsiveness =
+        Config.StabilizerResponsiveness
+
+    Align.MaxAngularVelocity =
+        10
+
+    Align.MaxTorque =
+        math.max(
+            40000,
+            Root.AssemblyMass
+            * Config.StabilizerTorqueMultiplier
+        )
+
+    Align.CFrame =
+        BuildOrientation(
+            Root,
+            Target
+        )
+
+    Align.Parent =
+        Root
+
+    local OldAutoRotate =
+        Humanoid.AutoRotate
+
+    Humanoid.AutoRotate =
+        false
+
+    Humanoid.PlatformStand =
+        false
+
+    if Humanoid.Sit then
+        Humanoid.Sit =
+            false
+    end
+
+    if Root.Anchored then
+        Root.Anchored =
+            false
+    end
+
+    local Data = {
+        Root = Root,
+        Humanoid = Humanoid,
+        AutoRotate = OldAutoRotate,
+        Attachment = Attachment,
+        Align = Align
+    }
+
+    StabilizerData =
+        Data
+
+    Data.Connection =
+        RunService.Heartbeat:
+        Connect(function()
+            if StabilizerData
+                ~= Data then
+
+                return
+            end
+
+            if not Config.Stabilizer
+                or not IsMoving then
+
+                return
+            end
+
+            if not Root
+                or not Root.Parent
+                or not Humanoid
+                or not Humanoid.Parent
+                or Humanoid.Health <= 0 then
+
+                return
+            end
+
+            if Root.Anchored then
+                Root.Anchored =
+                    false
+            end
+
+            if Humanoid.PlatformStand then
+                Humanoid.PlatformStand =
+                    false
+            end
+
+            if Humanoid.Sit then
+                Humanoid.Sit =
+                    false
+            end
+
+            Root.AssemblyAngularVelocity =
+                Vector3.zero
+        end)
+end
+
+local function CancelTween()
+    MoveGeneration += 1
+
+    if CurrentTween then
+        pcall(function()
+            CurrentTween:
+                Cancel()
+        end)
+
+        CurrentTween =
+            nil
+    end
+
+    CleanupStabilizer()
+
+    IsMoving =
+        false
+
+    CurrentTarget =
+        nil
+end
+
+local function IsValidCandy(
+    Object
+)
     if not Object
         or not Object.Parent then
 
         return false
     end
 
-    if not Object:IsA("BasePart") then
+    if not Object:IsA(
+        "BasePart"
+    ) then
+
         return false
     end
 
@@ -1151,14 +1589,16 @@ local function IsValidCandy(Object)
         return false
     end
 
-    if Object:GetAttribute("CoinID")
-        ~= "Candy" then
+    if Object:GetAttribute(
+        "CoinID"
+    ) ~= "Candy" then
 
         return false
     end
 
-    if Object:GetAttribute("Collected")
-        == true then
+    if Object:GetAttribute(
+        "Collected"
+    ) == true then
 
         return false
     end
@@ -1167,7 +1607,6 @@ local function IsValidCandy(Object)
 end
 
 local function GetNearestCandy()
-
     local _, _, Root =
         GetCharacter()
 
@@ -1175,22 +1614,25 @@ local function GetNearestCandy()
         return
     end
 
-    local Closest = nil
+    local Closest =
+        nil
+
     local ClosestDistance =
         math.huge
 
-    local Tagged =
+    for Index, Candy in ipairs(
         CollectionService:
         GetTagged(
             "ServerCoinPart"
         )
-
-    for _, Candy in ipairs(Tagged) do
-
-        if IsValidCandy(Candy) then
-
+    ) do
+        if IsValidCandy(
+            Candy
+        ) then
             local IgnoreUntil =
-                FailedTargets[Candy]
+                FailedTargets[
+                    Candy
+                ]
 
             if not IgnoreUntil
                 or os.clock()
@@ -1213,191 +1655,688 @@ local function GetNearestCandy()
                 end
             end
         end
+        if Index%32 == 0 then
+            task.wait()
+            if not Config.AutoCandy then return end
+        end
     end
 
+    local _, _, CurrentRoot = GetCharacter()
+    if CurrentRoot ~= Root then return end
+    if Closest and not IsValidCandy(Closest) then return end
     return Closest,
         ClosestDistance
 end
 
-local function MovementAllowed(Token,Character)
-    if Token~=MoveGeneration or not Config.AutoCandy or WaitingNextRound then return false end
-    local Current,_,Root=GetCharacter()
-    return Root~=nil and Current==Character and Addon~=nil and Addon.CanFarm()
+local function MovementConfirmed(
+    Candy,
+    OldBag
+)
+    return not Candy
+        or not Candy.Parent
+        or Candy:GetAttribute(
+            "Collected"
+        ) == true
+        or CurrentBag > OldBag
 end
 
-local function MovementRayParams(Candy)
-    local Ignore={Candy}
-    for _,OtherPlayer in ipairs(Players:GetPlayers()) do
-        if OtherPlayer.Character then Ignore[#Ignore+1]=OtherPlayer.Character end
+local function BuildTweenCFrame(
+    Root,
+    Position
+)
+    local Direction =
+        Position
+        - Root.Position
+
+    local Flat =
+        Vector3.new(
+            Direction.X,
+            0,
+            Direction.Z
+        )
+
+    if Flat.Magnitude
+        < 0.01 then
+
+        local Look =
+            Root.CFrame.LookVector
+
+        Flat =
+            Vector3.new(
+                Look.X,
+                0,
+                Look.Z
+            )
     end
-    if workspace.CurrentCamera then Ignore[#Ignore+1]=workspace.CurrentCamera end
-    local Params=RaycastParams.new()
-    Params.FilterType=Enum.RaycastFilterType.Exclude
-    Params.FilterDescendantsInstances=Ignore
-    Params.RespectCanCollide=true
-    Params.IgnoreWater=false
-    return Params
-end
 
-local function StandingHeight(Character,Humanoid,Root)
-    local Height=Humanoid.HipHeight+Root.Size.Y/2
-    if Humanoid.RigType==Enum.HumanoidRigType.R6 then
-        local Leg=Character:FindFirstChild("Left Leg") or Character:FindFirstChild("Right Leg")
-        Height=Height+(Leg and Leg.Size.Y or 2)
+    if Flat.Magnitude
+        < 0.01 then
+
+        Flat =
+            Vector3.new(
+                0,
+                0,
+                -1
+            )
+
+    else
+
+        Flat =
+            Flat.Unit
     end
-    return math.clamp(Height,2,5)
+
+    return CFrame.lookAt(
+        Position,
+        Position + Flat
+    )
 end
 
-local function MovementFloor(Position,Params)
-    local Hit=workspace:Raycast(Position+Vector3.new(0,5,0),Vector3.new(0,-18,0),Params)
-    if not Hit or Hit.Normal.Y<0.35 or Position.Y-Hit.Position.Y>8.5 then return nil end
-    return Hit
-end
+local function TweenSegment(
+    Root,
+    Position,
+    Speed,
+    Token,
+    Character,
+    MinimumDuration
+)
+    if not Root
+        or not Root.Parent then
 
-local function CandyGroundGoal(Candy,Height,Params)
-    if not IsValidCandy(Candy) then return nil end
-    local Hit=workspace:Raycast(Candy.Position+Vector3.new(0,0.5,0),Vector3.new(0,-18,0),Params)
-    if not Hit or Hit.Normal.Y<0.35 then return nil end
-    return Vector3.new(Candy.Position.X,Hit.Position.Y+Height,Candy.Position.Z),Hit.Position
-end
-
-local function MovementWall(From,To,Params)
-    local Delta=To-From
-    if Delta.Magnitude<0.01 then return false end
-    local Flat=Vector3.new(Delta.X,0,Delta.Z)
-    local Side=Flat.Magnitude>0.01 and Vector3.new(-Flat.Z,0,Flat.X).Unit or Vector3.zero
-    for _,Offset in ipairs({Vector3.zero,Side,-Side,Vector3.new(0,1.5,0)}) do
-        if workspace:Raycast(From+Offset,Delta,Params) then return true end
+        return false
     end
-    return false
-end
 
-local function MovementClear(From,To,Params)
-    if MovementWall(From,To,Params) then return false end
-    local Count=math.max(1,math.ceil((To-From).Magnitude/1.5))
-    for Index=1,Count do
-        if not MovementFloor(From:Lerp(To,Index/Count),Params) then return false end
+    if not MovementAllowed(
+        Token,
+        Character
+    ) then
+
+        return false
     end
+
+    local Distance =
+        (
+            Root.Position
+            - Position
+        ).Magnitude
+
+    if Distance <= 0.1 then
+        return true
+    end
+
+    local MoveSpeed =
+        math.max(
+            tonumber(Speed)
+            or Config.TweenSpeed,
+            1
+        )
+
+    local DefaultMinimum =
+        LowFPS
+        and FrameTime * 0.9
+        or 0.05
+
+    local Duration =
+        math.max(
+            Distance
+            / MoveSpeed,
+            tonumber(MinimumDuration)
+            or DefaultMinimum
+        )
+
+    if Config.Stabilizer then
+        StartStabilizer(
+            Root,
+            Position
+        )
+
+        if StabilizerData
+            and StabilizerData.Align then
+
+            StabilizerData.Align.CFrame =
+                BuildOrientation(
+                    Root,
+                    Position
+                )
+        end
+
+        Root.AssemblyAngularVelocity =
+            Vector3.zero
+
+    else
+
+        CleanupStabilizer()
+
+        Root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        Root.AssemblyAngularVelocity =
+            Vector3.zero
+    end
+
+    local Tween =
+        TweenService:
+        Create(
+            Root,
+            TweenInfo.new(
+                Duration,
+                Enum.EasingStyle.Linear,
+                Enum.EasingDirection.Out
+            ),
+            {
+                CFrame =
+                    BuildTweenCFrame(
+                        Root,
+                        Position
+                    )
+            }
+        )
+
+    CurrentTween =
+        Tween
+
+    Tween:Play()
+
+    local PlaybackState =
+        Tween.Completed:
+        Wait()
+
+    if CurrentTween
+        == Tween then
+
+        CurrentTween =
+            nil
+    end
+
+    if PlaybackState
+        == Enum.PlaybackState.Cancelled then
+
+        return false
+    end
+
+    if not MovementAllowed(
+        Token,
+        Character
+    ) then
+
+        return false
+    end
+
     return true
 end
 
-local function MovementConfirmed(Candy,OldBag)
-    return not Candy.Parent or Candy:GetAttribute("Collected")==true or CurrentBag>OldBag
-end
+local function TouchSweep(
+    Candy,
+    Token,
+    Character,
+    OldBag
+)
+    if not Config.Stabilizer
+        or not Config.TouchSweep
+        or not IsValidCandy(
+            Candy
+        ) then
 
-local function StepToPosition(Position,Candy,Token,Character,Root,Height,Params,OldBag,Jump,Blocked,Final)
-    local Start=Root.Position
-    local Length=(Position-Start).Magnitude
-    local Progress=0
-    local Deadline=os.clock()+math.max(4,Length/math.max(Config.TweenSpeed,1)*3+3)
-    while MovementAllowed(Token,Character) do
-        if MovementConfirmed(Candy,OldBag) then return true,"Collected" end
-        if not IsValidCandy(Candy) then return false,"InvalidCandy" end
-        if Blocked and Blocked() then return false,"Blocked" end
-        if os.clock()>Deadline then return false,"MovementTimeout" end
-        if Final then
-            Position=CandyGroundGoal(Candy,Height,Params)
-            if not Position then return false,"UnsafeFloor" end
-        end
-        if (Position-Root.Position).Magnitude<=0.5 then return true,"Reached" end
-        local DT=RunService.Heartbeat:Wait()
-        if not MovementAllowed(Token,Character) then return false,"Stopped" end
-        if MovementConfirmed(Candy,OldBag) then return true,"Collected" end
-        if not IsValidCandy(Candy) then return false,"InvalidCandy" end
-        if Blocked and Blocked() then return false,"Blocked" end
-        if Final then
-            Position=CandyGroundGoal(Candy,Height,Params)
-            if not Position then return false,"UnsafeFloor" end
-        end
-        local Step=math.min(Config.TweenSpeed*math.clamp(DT,0,1/30),math.min(3.5,Config.SegmentDistance))
-        if Step<=0 then return false,"NoProgress" end
-        local Destination=Position
-        if Jump then
-            Progress=math.min(1,Progress+Step/math.max(Length,0.01))
-            Destination=Start:Lerp(Position,Progress)+Vector3.new(0,16*Progress*(1-Progress),0)
-        end
-        local Delta=Destination-Root.Position
-        local Next=Delta.Magnitude>0.001 and Root.Position+Delta.Unit*math.min(Step,Delta.Magnitude) or Root.Position
-        local Floor=MovementFloor(Next,Params)
-        if not Floor then return false,"UnsafeFloor" end
-        local Rise=Floor.Position.Y+Height-Next.Y
-        if Rise>1.5 then return false,"Blocked" end
-        if Rise>0 then Next=Next+Vector3.new(0,Rise,0) end
-        if (Next-Root.Position).Magnitude>3.5 or MovementWall(Root.Position,Next,Params) then return false,"Blocked" end
-        Root.AssemblyLinearVelocity=Vector3.zero
-        Root.AssemblyAngularVelocity=Vector3.zero
-        Root.CFrame=Root.CFrame+(Next-Root.Position)
+        return true
     end
-    return false,"Stopped"
+
+    local _, _, Root =
+        GetCharacter()
+
+    if not Root then
+        return false
+    end
+
+    local Center =
+        Candy.Position
+        + Vector3.new(
+            0,
+            Config.YOffset,
+            0
+        )
+
+    local Right =
+        Root.CFrame.RightVector
+
+    local Forward =
+        Root.CFrame.LookVector
+
+    Right =
+        Vector3.new(
+            Right.X,
+            0,
+            Right.Z
+        )
+
+    Forward =
+        Vector3.new(
+            Forward.X,
+            0,
+            Forward.Z
+        )
+
+    if Right.Magnitude > 0 then
+        Right = Right.Unit
+    else
+        Right = Vector3.xAxis
+    end
+
+    if Forward.Magnitude > 0 then
+        Forward = Forward.Unit
+    else
+        Forward = Vector3.zAxis
+    end
+
+    local D =
+        Config.SweepDistance
+
+    local Points
+
+    if LowFPS then
+        Points = {
+            Center + Right * D,
+            Center - Right * D,
+            Center
+        }
+    else
+        Points = {
+            Center,
+            Center + Right * D,
+            Center - Right * D,
+            Center + Forward * D,
+            Center - Forward * D,
+            Center
+        }
+    end
+
+    for _, Position in ipairs(
+        Points
+    ) do
+        if not MovementAllowed(
+            Token,
+            Character
+        ) then
+
+            return false
+        end
+
+        if MovementConfirmed(
+            Candy,
+            OldBag
+        ) then
+
+            return true
+        end
+
+        if not IsValidCandy(
+            Candy
+        ) then
+
+            return true
+        end
+
+        local CurrentCharacter,
+            _,
+            CurrentRoot =
+            GetCharacter()
+
+        if CurrentCharacter ~= Character
+            or not CurrentRoot then
+
+            return false
+        end
+
+        local Success =
+            TweenSegment(
+                CurrentRoot,
+                Position,
+                Config.SweepSpeed,
+                Token,
+                Character,
+                LowFPS and FrameTime * 0.85 or nil
+            )
+
+        if not Success then
+            return false
+        end
+    end
+
+    if Config.FinalHold > 0 then
+        local Start =
+            os.clock()
+
+        while MovementAllowed(
+            Token,
+            Character
+        )
+            and os.clock()
+                - Start
+                < Config.FinalHold do
+
+            if MovementConfirmed(
+                Candy,
+                OldBag
+            ) then
+
+                return true
+            end
+
+            task.wait(0.03)
+        end
+    end
+
+    return true
 end
 
-local function FollowCandyRoute(Candy,Token)
-    local Character,Humanoid,Root=GetCharacter()
-    if not Root or not IsValidCandy(Candy) or not MovementAllowed(Token,Character) then return false,"Stopped" end
-    if (Candy.Position-Root.Position).Magnitude>350 then return false,"TargetTooFar" end
-    local Params=MovementRayParams(Candy)
-    local Height=StandingHeight(Character,Humanoid,Root)
-    local OldBag=CurrentBag
-    for Attempt=1,4 do
-        if not MovementAllowed(Token,Character) then return false,"Stopped" end
-        if MovementConfirmed(Candy,OldBag) then return true,"Collected" end
-        if not IsValidCandy(Candy) then return false,"InvalidCandy" end
-        local Goal,Ground=CandyGroundGoal(Candy,Height,Params)
-        if not Goal then return false,"UnsafeFloor" end
-        if MovementClear(Root.Position,Goal,Params) then
-            local Reached,Reason=StepToPosition(Goal,Candy,Token,Character,Root,Height,Params,OldBag,false,nil,true)
-            if Reached or Reason=="Stopped" or Reason=="InvalidCandy" then return Reached,Reason end
+local function SafeTweenTo(
+    Candy
+)
+    local Character,
+        _,
+        Root =
+        GetCharacter()
+
+    if not Character
+        or not Root
+        or not IsValidCandy(
+            Candy
+        ) then
+
+        return false
+    end
+
+    MoveGeneration += 1
+
+    local Token =
+        MoveGeneration
+
+    IsMoving =
+        true
+
+    CurrentTarget =
+        Candy
+
+    local OldBag =
+        CurrentBag
+
+    local Success =
+        true
+
+    while MovementAllowed(
+        Token,
+        Character
+    )
+        and Candy
+        and Candy.Parent
+        and IsValidCandy(
+            Candy
+        ) do
+
+        if MovementConfirmed(
+            Candy,
+            OldBag
+        ) then
+
+            break
         end
-        local Path=PathfindingService:CreatePath({AgentRadius=2,AgentHeight=5,AgentCanJump=true,AgentCanClimb=true,WaypointSpacing=4})
-        local Computed=pcall(Path.ComputeAsync,Path,Root.Position,Ground)
-        if not MovementAllowed(Token,Character) then return false,"Stopped" end
-        if MovementConfirmed(Candy,OldBag) then return true,"Collected" end
-        if not IsValidCandy(Candy) then return false,"InvalidCandy" end
-        if Computed and Path.Status==Enum.PathStatus.Success then
-            local ActiveIndex=1
-            local Blocked=false
-            RouteConnection=Path.Blocked:Connect(function(Index) if Index>=ActiveIndex then Blocked=true end end)
-            local Reached,Reason
-            for Index,Point in ipairs(Path:GetWaypoints()) do
-                ActiveIndex=Index
-                if Index>1 then
-                    Reached,Reason=StepToPosition(Point.Position+Vector3.new(0,Height,0),Candy,Token,Character,Root,Height,Params,OldBag,Point.Action==Enum.PathWaypointAction.Jump,function() return Blocked end,false)
-                    if not Reached or Reason=="Collected" then break end
+
+        local CurrentCharacter,
+            _,
+            CurrentRoot =
+            GetCharacter()
+
+        if CurrentCharacter ~= Character
+            or not CurrentRoot then
+
+            Success =
+                false
+
+            break
+        end
+
+        Root =
+            CurrentRoot
+
+        local FinalPosition =
+            Candy.Position
+            + Vector3.new(
+                0,
+                Config.YOffset,
+                0
+            )
+
+        local Delta =
+            FinalPosition
+            - Root.Position
+
+        local Distance =
+            Delta.Magnitude
+
+        if Distance <= 2.2 then
+            break
+        end
+
+        local TargetPosition
+
+        if Distance
+            > Config.FinalDistance then
+
+            local StepDistance =
+                math.min(
+                    Config.SegmentDistance,
+                    math.max(
+                        Distance
+                        - Config.FinalDistance,
+                        0.5
+                    )
+                )
+
+            TargetPosition =
+                Root.Position
+                + Delta.Unit
+                * StepDistance
+
+        else
+
+            TargetPosition =
+                FinalPosition
+        end
+
+        local MoveSpeed =
+            Config.TweenSpeed
+
+        local MinimumDuration =
+            nil
+
+        if Config.Stabilizer
+            and Distance
+                <= Config.FinalDistance then
+
+            MoveSpeed =
+                math.min(
+                    MoveSpeed,
+                    Config.FinalSpeed
+                )
+
+            if LowFPS then
+                MinimumDuration =
+                    FrameTime * 2.25
+            end
+        end
+
+        Success =
+            TweenSegment(
+                Root,
+                TargetPosition,
+                MoveSpeed,
+                Token,
+                Character,
+                MinimumDuration
+            )
+
+        if not Success then
+            break
+        end
+
+        if MovementConfirmed(
+            Candy,
+            OldBag
+        ) then
+            break
+        end
+
+        if not MovementAllowed(
+            Token,
+            Character
+        ) then
+
+            Success =
+                false
+
+            break
+        end
+
+        if Config.SegmentDelay > 0 then
+            task.wait(
+                Config.SegmentDelay
+            )
+        end
+    end
+
+    if Success
+        and MovementAllowed(
+            Token,
+            Character
+        )
+        and IsValidCandy(
+            Candy
+        )
+        and not MovementConfirmed(
+            Candy,
+            OldBag
+        ) then
+
+        local CurrentCharacter,
+            _,
+            Root2 =
+            GetCharacter()
+
+        if CurrentCharacter == Character
+            and Root2 then
+
+            local Final =
+                Candy.Position
+                + Vector3.new(
+                    0,
+                    Config.YOffset,
+                    0
+                )
+
+            local FinalSpeed =
+                Config.Stabilizer
+                and math.min(
+                    Config.TweenSpeed,
+                    Config.FinalSpeed
+                )
+                or Config.TweenSpeed
+
+            Success =
+                TweenSegment(
+                    Root2,
+                    Final,
+                    FinalSpeed,
+                    Token,
+                    Character,
+                    LowFPS and FrameTime * 2.25 or nil
+                )
+
+            if Success
+                and LowFPS
+                and not MovementConfirmed(
+                    Candy,
+                    OldBag
+                ) then
+
+                local ConfirmUntil =
+                    os.clock()
+                    + FrameTime * 1.25
+
+                while MovementAllowed(
+                    Token,
+                    Character
+                )
+                    and os.clock()
+                        < ConfirmUntil
+                    and not MovementConfirmed(
+                        Candy,
+                        OldBag
+                    ) do
+
+                    RunService.Heartbeat:
+                        Wait()
                 end
             end
-            if RouteConnection then RouteConnection:Disconnect();RouteConnection=nil end
-            if Reason=="Collected" then return true,Reason end
-            if Reason=="Stopped" or Reason=="InvalidCandy" then return false,Reason end
-            Goal=CandyGroundGoal(Candy,Height,Params)
-            if Goal and MovementClear(Root.Position,Goal,Params) then
-                Reached,Reason=StepToPosition(Goal,Candy,Token,Character,Root,Height,Params,OldBag,false,nil,true)
-                if Reached or Reason=="Stopped" or Reason=="InvalidCandy" then return Reached,Reason end
+
+            if Success
+                and not MovementConfirmed(
+                    Candy,
+                    OldBag
+                )
+                and Config.Stabilizer then
+
+                Success =
+                    TouchSweep(
+                        Candy,
+                        Token,
+                        Character,
+                        OldBag
+                    )
             end
         end
-        task.wait(0.08)
     end
-    return false,"RouteRetriesExceeded"
+
+    if Token == MoveGeneration then
+        if CurrentTween then
+            pcall(function()
+                CurrentTween:
+                    Cancel()
+            end)
+
+            CurrentTween =
+                nil
+        end
+
+        CleanupStabilizer()
+
+        IsMoving =
+            false
+
+        CurrentTarget =
+            nil
+    end
+
+    if not Success
+        and Candy
+        and Candy.Parent
+        and IsValidCandy(
+            Candy
+        ) then
+
+        FailedTargets[
+            Candy
+        ] =
+            os.clock()
+            + Config.FailedTargetDelay
+    end
+
+    return Success
 end
 
-local function StepMoveToCandy(Candy)
-    CancelTween()
-    local Token=MoveGeneration
-    IsMoving=true
-    CurrentTarget=Candy
-    local OK,Reached,Reason=pcall(FollowCandyRoute,Candy,Token)
-    if Token==MoveGeneration then
-        if RouteConnection then RouteConnection:Disconnect();RouteConnection=nil end
-        IsMoving=false
-        CurrentTarget=nil
-    end
-    if not OK then
-        if Addon then Addon.MovementError(Reached) end
-        Reached,Reason=false,"MovementError"
-    end
-    if not Reached and Reason~="Stopped" and Candy and Candy.Parent then
-        FailedTargets[Candy]=os.clock()+Config.FailedTargetDelay
-    end
-    return Reached
+local function StepMoveToCandy(
+    Candy
+)
+    return SafeTweenTo(
+        Candy
+    )
 end
 
 local function WaitForCollect(
