@@ -50,6 +50,7 @@ function Core.config(raw, mode, fps)
     return {
         fullscreenUI = fullscreenUI ~= false,
         fpsBoost = raw["Fps Boots"] == true,
+        hopLow = raw["Hop Low"] == true,
         mode = mode == 2 and 2 or 1,
         fps = math.floor(Core.number(fps, 60, 1, 2000)),
         speed = Core.number(raw["Spead"], 120, 1, 1000000),
@@ -475,7 +476,7 @@ local S={running=true,paused=false,status="Starting",notice="",started=os.clock(
     available=0,profile=nil,profileAt=0,map=nil,mapCF=nil,mapSize=nil,mapChecked=0,tween=nil,moveToken=0,
     connections={},failed={},transaction=false,purchaseBlocked=false,claimPending={},inflight=nil,logQueue={},webhookQueue={},
     session=tostring(os.time()).."-"..tostring(math.floor(os.clock()*1000)),receipts=0,errors=0,webhookStatus="Disabled",lastWebhook=0,
-    lastProfileRead=-math.huge,completed=false,collected=0,finalPending=false,itemsDirty=true,itemsText="None"}
+    lastProfileRead=-math.huge,completed=false,collected=0,finalPending=false,itemsDirty=true,itemsText="None",hopStatus=""}
 local API={}
 Env.SkiderMM2=API
 local Ui,Labels,Notify,FpsBoost
@@ -1079,6 +1080,7 @@ task.spawn(function()
         if m.candies~=last.candies or m.bag~=last.bag then Labels.SetCandies(m.candies,m.bag) end
         local shownStatus=blockedByVerification() and "Required Buy/Premium Or Verification Age" or S.paused and "Paused" or S.status
         if S.notice~="" and not blockedByVerification() then shownStatus=S.notice end
+        if S.hopStatus~="" and not blockedByVerification() then shownStatus=S.hopStatus end
         if shownStatus~=last.status then Labels.SetStatus(shownStatus) end
         if m.map~=last.map or m.role~=last.role or m.tier~=last.tier
             or m.elapsed~=last.elapsed or m.roundTime~=last.roundTime then
@@ -1168,6 +1170,122 @@ API.CanFarm=canFarm
 API.MovementError=function(message) log("MOVEMENT_ERROR",{message=tostring(message)}) end
 log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,targetTier=TargetTier,speed=Config.speed,
     validation={movement=Validation.NoMovement==true,spending=Validation.NoSpending==true}})
+
+if Config.hopLow then
+    local TeleportService=game:GetService("TeleportService")
+    local HOP_TRIGGER=5
+    local HOP_TARGET=4
+    local hopStarted=false
+    local hopFailedAt=0
+    local failedIds={}
+    local function hopRequest(url)
+        local requestFn=typeof(request)=="function" and request
+            or (typeof(http_request)=="function" and http_request)
+            or (typeof(syn)=="table" and typeof(syn.request)=="function" and syn.request) or nil
+        local ok,body=pcall(function()
+            if requestFn then
+                local response=requestFn({Url=url,Method="GET"})
+                if response and tonumber(response.StatusCode)==200 then return response.Body end
+                error("HTTP "..tostring(response and response.StatusCode))
+            end
+            return game:HttpGet(url)
+        end)
+        if not ok then return nil,tostring(body) end
+        local decoded,data=pcall(Http.JSONDecode,Http,body)
+        if not decoded then return nil,"JSON decode failed" end
+        return data
+    end
+    local function hopScan()
+        local pool,seen,cursor,lastErr={},{},"",nil
+        for _=1,3 do
+            if not S.running then break end
+            local url="https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100"
+            if cursor~="" then url=url.."&cursor="..cursor end
+            local data,err=hopRequest(url)
+            if not data then
+                task.wait(1.5)
+                data,err=hopRequest(url)
+            end
+            if not data then lastErr=err;break end
+            if type(data.data)=="table" then
+                for _,server in ipairs(data.data) do
+                    local id=tostring(server.id)
+                    local playing=tonumber(server.playing) or 99
+                    if id~=tostring(game.JobId) and not seen[id] and not failedIds[id] and playing>=1 and playing<=HOP_TARGET then
+                        seen[id]=true
+                        pool[#pool+1]={id=id,playing=playing,r=math.random()}
+                    end
+                end
+            end
+            cursor=data.nextPageCursor
+            if type(cursor)~="string" or cursor=="" or #pool>=12 then break end
+            task.wait(0.4)
+        end
+        if #pool==0 and lastErr then return pool,"API failed: "..tostring(lastErr) end
+        table.sort(pool,function(a,b)
+            if a.playing~=b.playing then return a.playing<b.playing end
+            return a.r<b.r
+        end)
+        return pool
+    end
+    local function hopSafe()
+        if not S.running or S.completed or S.transaction or blockedByVerification() then return false end
+        if S.inflight and not S.inflight.done then return false end
+        if next(S.claimPending)~=nil then return false end
+        if S.finalPending and (tonumber(passData().FinalRewardClaimAmount) or 0)<1 then return false end
+        return not canFarm()
+    end
+    local function hopTo(server)
+        hopStarted=false
+        hopFailedAt=0
+        S.hopStatus="Hop Low: joining server with "..server.playing.." players"
+        log("HOP_LOW",{job=server.id,players=server.playing})
+        local ok=pcall(TeleportService.TeleportToPlaceInstance,TeleportService,game.PlaceId,server.id,Player)
+        if not ok then return false end
+        local deadline=os.clock()+15
+        local extended=false
+        while S.running and os.clock()<deadline do
+            if hopFailedAt>0 then return false end
+            if hopStarted and not extended then extended=true;deadline=os.clock()+40 end
+            task.wait(0.1)
+        end
+        return false
+    end
+    connect(TeleportService.TeleportInitFailed,function(player)
+        if player==Player then hopFailedAt=os.clock() end
+    end)
+    connect(Player.OnTeleport,function(state)
+        local name=""
+        pcall(function() name=state.Name end)
+        if name=="Failed" then hopFailedAt=os.clock() else hopStarted=true end
+    end)
+    task.spawn(function()
+        while S.running do
+            task.wait(2)
+            local count=#Players:GetPlayers()
+            if S.running and count>HOP_TRIGGER and hopSafe() then
+                S.hopStatus="Hop Low: "..count.." players, scanning servers"
+                local pool,err=hopScan()
+                if err then
+                    S.hopStatus="Hop Low: "..err
+                    task.wait(string.find(err,"429",1,true) and 20 or 10)
+                elseif #pool==0 then
+                    S.hopStatus="Hop Low: no server under "..HOP_TRIGGER.." players"
+                    task.wait(8)
+                else
+                    for index,server in ipairs(pool) do
+                        if index>8 or not S.running or not hopSafe() or #Players:GetPlayers()<=HOP_TRIGGER then break end
+                        if not hopTo(server) then failedIds[server.id]=true end
+                    end
+                    task.wait(5)
+                end
+                S.hopStatus=""
+            elseif S.hopStatus~="" then
+                S.hopStatus=""
+            end
+        end
+    end)
+end
 
 if Config.fpsBoost then
     task.delay(10,function()
