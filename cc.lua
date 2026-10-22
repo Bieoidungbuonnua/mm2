@@ -50,7 +50,6 @@ function Core.config(raw, mode, fps)
     return {
         fullscreenUI = fullscreenUI ~= false,
         fpsBoost = raw["Fps Boots"] == true,
-        hopLow = raw["Hop Low"] == true,
         mode = mode == 2 and 2 or 1,
         fps = math.floor(Core.number(fps, 60, 1, 2000)),
         speed = Core.number(raw["Spead"], 120, 1, 1000000),
@@ -1171,7 +1170,7 @@ API.MovementError=function(message) log("MOVEMENT_ERROR",{message=tostring(messa
 log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold,passThreshold=Config.passThreshold,targetTier=TargetTier,speed=Config.speed,
     validation={movement=Validation.NoMovement==true,spending=Validation.NoSpending==true}})
 
-if Config.hopLow then
+do
     local TeleportService=game:GetService("TeleportService")
     local HOP_AFTER=1800
     local HOP_MIN=7
