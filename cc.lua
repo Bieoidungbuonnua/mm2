@@ -1173,8 +1173,8 @@ log("READY",{mode=Config.mode,crate=CrateID,crateThreshold=Config.crateThreshold
 
 if Config.hopLow then
     local TeleportService=game:GetService("TeleportService")
-    local HOP_TRIGGER=5
-    local HOP_TARGET=4
+    local HOP_AFTER=1800
+    local HOP_MIN=7
     local hopStarted=false
     local hopFailedAt=0
     local failedIds={}
@@ -1196,32 +1196,21 @@ if Config.hopLow then
         return data
     end
     local function hopScan()
-        local pool,seen,cursor,lastErr={},{},"",nil
-        for _=1,3 do
-            if not S.running then break end
-            local url="https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100"
-            if cursor~="" then url=url.."&cursor="..cursor end
-            local data,err=hopRequest(url)
-            if not data then
-                task.wait(1.5)
-                data,err=hopRequest(url)
-            end
-            if not data then lastErr=err;break end
-            if type(data.data)=="table" then
-                for _,server in ipairs(data.data) do
-                    local id=tostring(server.id)
-                    local playing=tonumber(server.playing) or 99
-                    if id~=tostring(game.JobId) and not seen[id] and not failedIds[id] and playing>=1 and playing<=HOP_TARGET then
-                        seen[id]=true
-                        pool[#pool+1]={id=id,playing=playing,r=math.random()}
-                    end
-                end
-            end
-            cursor=data.nextPageCursor
-            if type(cursor)~="string" or cursor=="" or #pool>=12 then break end
-            task.wait(0.4)
+        local url="https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100"
+        local data,err=hopRequest(url)
+        if not data then
+            task.wait(2)
+            data,err=hopRequest(url)
         end
-        if #pool==0 and lastErr then return pool,"API failed: "..tostring(lastErr) end
+        local pool={}
+        if type(data)~="table" or type(data.data)~="table" then return pool,"Hop: API failed "..tostring(err) end
+        for _,server in ipairs(data.data) do
+            local id=tostring(server.id)
+            local playing=tonumber(server.playing) or 0
+            if id~=tostring(game.JobId) and not failedIds[id] and playing>=HOP_MIN then
+                pool[#pool+1]={id=id,playing=playing,r=math.random()}
+            end
+        end
         table.sort(pool,function(a,b)
             if a.playing~=b.playing then return a.playing<b.playing end
             return a.r<b.r
@@ -1238,8 +1227,8 @@ if Config.hopLow then
     local function hopTo(server)
         hopStarted=false
         hopFailedAt=0
-        S.hopStatus="Hop Low: joining server with "..server.playing.." players"
-        log("HOP_LOW",{job=server.id,players=server.playing})
+        S.hopStatus="Hop: joining server with "..server.playing.." players"
+        log("HOP",{job=server.id,players=server.playing})
         local ok=pcall(TeleportService.TeleportToPlaceInstance,TeleportService,game.PlaceId,server.id,Player)
         if not ok then return false end
         local deadline=os.clock()+15
@@ -1260,27 +1249,22 @@ if Config.hopLow then
         if name=="Failed" then hopFailedAt=os.clock() else hopStarted=true end
     end)
     task.spawn(function()
+        local hopAt=S.started+HOP_AFTER
         while S.running do
-            task.wait(2)
-            local count=#Players:GetPlayers()
-            if S.running and count>HOP_TRIGGER and hopSafe() then
-                S.hopStatus="Hop Low: "..count.." players, scanning servers"
+            task.wait(5)
+            if S.running and os.clock()>=hopAt and hopSafe() then
+                S.hopStatus="Hop: scanning servers"
                 local pool,err=hopScan()
-                if err then
-                    S.hopStatus="Hop Low: "..err
-                    task.wait(string.find(err,"429",1,true) and 20 or 10)
-                elseif #pool==0 then
-                    S.hopStatus="Hop Low: no server under "..HOP_TRIGGER.." players"
-                    task.wait(8)
+                if #pool==0 then
+                    S.hopStatus=err or "Hop: no server with "..HOP_MIN.."+ players"
+                    task.wait(5)
                 else
                     for index,server in ipairs(pool) do
-                        if index>8 or not S.running or not hopSafe() or #Players:GetPlayers()<=HOP_TRIGGER then break end
+                        if index>8 or not S.running or not hopSafe() then break end
                         if not hopTo(server) then failedIds[server.id]=true end
                     end
-                    task.wait(5)
                 end
-                S.hopStatus=""
-            elseif S.hopStatus~="" then
+                hopAt=os.clock()+HOP_AFTER
                 S.hopStatus=""
             end
         end
